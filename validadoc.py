@@ -4,7 +4,7 @@ import requests
 import json
 import pandas as pd
 import pdfplumber
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance
 import pytesseract
 
 # Configuração da página
@@ -90,32 +90,30 @@ def identificar_tipo_documento(texto: str) -> str:
 # --- FUNÇÕES DE EXTRAÇÃO DE TEXTO E CNPJ ---
 
 def extrair_cnpjs_de_texto(texto: str) -> list:
-    """Busca padrões de CNPJ (com tratamento abrangente para falhas de OCR)."""
+    """Busca padrões de CNPJ com múltiplos níveis de tolerância."""
     cnpjs_limpos = set()
 
-    # 1. Padrão estrito de CNPJ formatado (XX.XXX.XXX/XXXX-XX)
+    # 1. Padrão formatado rigoroso (XX.XXX.XXX/XXXX-XX)
     padrao_formatado = r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}'
     for item in re.findall(padrao_formatado, texto):
         num = re.sub(r'\D', '', item)
         if len(num) == 14:
             cnpjs_limpos.add(num)
 
-    # 2. Limpeza de substituições comuns do OCR (O -> 0, I/l -> 1)
-    texto_modificado = texto.replace('O', '0').replace('o', '0').replace('I', '1').replace('l', '1')
+    # 2. Substituição de confusões clássicas de OCR (O/o -> 0, I/l/L -> 1)
+    texto_modificado = texto.replace('O', '0').replace('o', '0').replace('I', '1').replace('l', '1').replace('L', '1')
 
-    # Busca padrão flexível com pontuações ou espaços variados
+    # Busca padrão flexível de CNPJ
     padrao_flexivel = r'\d{2}[^\d]?\d{3}[^\d]?\d{3}[^\d]?\d{4}[^\d]?\d{2}'
     for item in re.findall(padrao_flexivel, texto_modificado):
         num = re.sub(r'\D', '', item)
         if len(num) == 14:
             cnpjs_limpos.add(num)
 
-    # 3. Fallback: extrai todos os blocos contínuos de dígitos e varre janelas de 14 números
+    # 3. Extração por blocos contínuos de dígitos
     apenas_numeros = re.sub(r'\D', ' ', texto_modificado)
-    blocos = apenas_numeros.split()
-    for bloco in blocos:
+    for bloco in apenas_numeros.split():
         if len(bloco) >= 14:
-            # Tenta pegar sequências de 14 dígitos no bloco
             for i in range(len(bloco) - 13):
                 cand = bloco[i:i+14]
                 if len(cand) == 14:
@@ -124,27 +122,30 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
     return list(cnpjs_limpos)
 
 def pre_processar_imagem(img: Image.Image) -> Image.Image:
-    """Aplica contraste e nitidez para facilitar o OCR do Tesseract."""
-    img = img.convert('L') # Escala de cinza
+    """Aplica escala de cinza e contraste para reforçar textos finos em NFS-e."""
+    img = img.convert('L')
     enhancer = ImageEnhance.Contrast(img)
-    img = enhancer.enhance(2.0) # Aumenta contraste
-    return img
+    return enhancer.enhance(2.5)
 
 def ler_arquivo(uploaded_file) -> str:
-    """Lê o arquivo anexado dependendo da extensão e retorna o texto extraído."""
+    """Lê o arquivo anexado utilizando OCR normal e OCR otimizado para tabelas."""
     extensao = uploaded_file.name.split('.')[-1].lower()
     texto_extraido = ""
 
     try:
         if extensao in ['jpg', 'jpeg', 'png']:
             imagem = Image.open(uploaded_file)
-            # OCR primário
-            texto_extraido = pytesseract.image_to_string(imagem, lang='por')
             
-            # Se não extraiu texto suficiente, tenta com pré-processamento de imagem
-            if len(texto_extraido.strip()) < 30:
-                imagem_tratada = pre_processar_imagem(imagem)
-                texto_extraido += "\n" + pytesseract.image_to_string(imagem_tratada, lang='por')
+            # Passada 1: OCR Padrão
+            texto_extraido += pytesseract.image_to_string(imagem, lang='por') + "\n"
+            
+            # Passada 2: Otimizada para tabelas e blocos de texto (PSM 6)
+            config_tabela = '--psm 6'
+            texto_extraido += pytesseract.image_to_string(imagem, lang='por', config=config_tabela) + "\n"
+            
+            # Passada 3: Imagem tratada com contraste
+            imagem_tratada = pre_processar_imagem(imagem)
+            texto_extraido += pytesseract.image_to_string(imagem_tratada, lang='por', config=config_tabela) + "\n"
 
         elif extensao == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
@@ -158,7 +159,7 @@ def ler_arquivo(uploaded_file) -> str:
                     for pagina in pdf.pages:
                         img = pagina.to_image().original
                         img_tratada = pre_processar_imagem(img)
-                        texto_extraido += pytesseract.image_to_string(img_tratada, lang='por') + "\n"
+                        texto_extraido += pytesseract.image_to_string(img_tratada, lang='por', config='--psm 6') + "\n"
 
         elif extensao == 'txt':
             texto_extraido = uploaded_file.read().decode('utf-8', errors='ignore')
@@ -225,6 +226,7 @@ if arquivo is not None:
     if not cnpjs_encontrados:
         st.warning("⚠️ Nenhum CNPJ válido foi encontrado no arquivo anexado.")
     else:
+        cnpjs_exibidos = 0
         for cnpj in cnpjs_encontrados:
             dados = consultar_receita_federal(cnpj)
 
@@ -232,6 +234,7 @@ if arquivo is not None:
                 cnpj_formatado = formatar_cnpj(cnpj)
                 with st.expander(f"CNPJ: {cnpj_formatado}", expanded=True):
                     st.error(f"❌ **CNPJ {cnpj_formatado}:** {dados['erro']}")
+                cnpjs_exibidos += 1
             else:
                 razao_social_oficial = dados.get("razao_social", "N/A")
 
@@ -239,6 +242,7 @@ if arquivo is not None:
                 if "CONSELHO DE ESCOLA" in razao_social_oficial.upper():
                     continue
 
+                cnpjs_exibidos += 1
                 cnpj_formatado = formatar_cnpj(cnpj)
                 situacao = dados.get("descricao_situacao_cadastral", "DESCONHECIDA")
                 nome_fantasia = dados.get("nome_fantasia") or "Não informado"
@@ -258,6 +262,9 @@ if arquivo is not None:
                     with col2:
                         st.write(f"**Cidade/UF:** {municipio} - {uf}")
                         st.write(f"**Atividade Principal:** {dados.get('cnae_fiscal_descricao', 'N/A')}")
+
+        if cnpjs_exibidos == 0:
+            st.info("ℹ️ Os CNPJs identificados pertencem a Conselhos de Escola e foram omitidos conforme a regra de exibição.")
 
     # Marca a validação como concluída ao FINAL do processamento
     if not st.session_state.validado:
