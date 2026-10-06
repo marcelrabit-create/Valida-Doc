@@ -63,7 +63,6 @@ def identificar_tipo_documento(texto: str) -> str:
     """Classifica o documento com base em palavras-chave abrangentes encontradas no texto."""
     texto_upper = texto.upper()
 
-    # Identificação flexível para qualquer layout de Consolidação de Pesquisas de Preços
     if (
         "CONSOLIDACAO" in texto_upper or "CONSOLIDAÇÃO" in texto_upper or 
         "PESQUISAS DE PRECOS" in texto_upper or "PESQUISAS DE PREÇOS" in texto_upper or 
@@ -72,7 +71,6 @@ def identificar_tipo_documento(texto: str) -> str:
     ):
         return "Consolidação de Pesquisas de Preços"
     
-    # Nota Fiscal de Serviços
     elif (
         "NOTA FISCAL DE SERVICOS" in texto_upper or 
         "NOTA FISCAL DE SERVIÇOS" in texto_upper or 
@@ -94,7 +92,6 @@ def identificar_tipo_documento(texto: str) -> str:
     ):
         return "Nota Fiscal de Serviços"
     
-    # Nota Fiscal de Compra de Materiais
     elif (
         "DANFE" in texto_upper or 
         "DOCUMENTO AUXILIAR DA NOTA FISCAL" in texto_upper or 
@@ -148,12 +145,19 @@ def formatar_cnpj(cnpj: str) -> str:
     c = re.sub(r'\D', '', str(cnpj))
     return f"{c[:2]}.{c[2:5]}.{c[5:8]}/{c[8:12]}-{c[12:]}"
 
-# --- EXTRAÇÃO DO CNPJ DO BLOCO I (UNIDADE ESCOLAR) ---
+# --- EXTRAÇÃO ESTRITA DO CNPJ DO BLOCO I (UNIDADE ESCOLAR) ---
 
 def extrair_cnpj_unidade_escolar(texto: str) -> str:
-    """Identifica com precisão o CNPJ da Unidade Escolar (item 02 do Bloco I) em documentos verticais ou horizontais."""
+    """Extrai o CNPJ estritamente contido no Bloco I (Identificação da Unidade Executora Própria)."""
+    # Isola apenas a parte do texto correspondente ao Bloco I (antes do Bloco II)
+    bloco_i_texto = texto
+    if "BLOCO II" in texto.upper():
+        bloco_i_texto = texto.upper().split("BLOCO II")[0]
+    elif "BLOCO III" in texto.upper():
+        bloco_i_texto = texto.upper().split("BLOCO III")[0]
+
     padrao_cnpj = r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b'
-    cnpjs = re.findall(padrao_cnpj, texto[:1200]) # Varre a parte superior do documento
+    cnpjs = re.findall(padrao_cnpj, bloco_i_texto)
     
     for c in cnpjs:
         c_limpo = re.sub(r'\D', '', c)
@@ -300,7 +304,7 @@ if st.session_state.validado:
     else:
         st.info(f"**{st.session_state.tipo_doc}**")
 
-    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (COM DADOS OFICIAIS DA RECEITA FEDERAL)
+    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (APENAS DO BLOCO I)
     if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
         st.divider()
         st.subheader("🏫 Unidade Escolar")
@@ -317,14 +321,14 @@ if st.session_state.validado:
         st.write(f"**Razão Social:** {razao_social_uex}")
         st.write(f"**CNPJ:** {cnpj_formatado_uex}")
 
-    # 2º: VALIDAÇÃO NA RECEITA FEDERAL (DOS FORNECEDORES/PROPONENTES)
+    # 2º: VALIDAÇÃO NA RECEITA FEDERAL (DOS FORNECEDORES/PROPONENTES DO BLOCO II)
     if st.session_state.tipo_doc != "Documento Genérico / Não Identificado":
         st.divider()
         st.subheader("🔍 Validação na Receita Federal")
 
         cnpjs_encontrados = extrair_cnpjs_de_texto(st.session_state.texto_processado)
         
-        # Exclui o CNPJ da Unidade Escolar da lista de proponentes, se presente
+        # Exclui o CNPJ da Unidade Escolar da lista de proponentes
         cnpjs_para_exibir = [
             c for c in cnpjs_encontrados 
             if re.sub(r'\D', '', c) != "06697670000195" and (not cnpj_uex or re.sub(r'\D', '', c) != cnpj_uex)
