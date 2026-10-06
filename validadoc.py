@@ -83,19 +83,39 @@ def identificar_tipo_documento(texto: str) -> str:
     else:
         return "Documento Genérico / Não Identificado"
 
-# --- FUNÇÕES DE EXTRAÇÃO DE TEXTO ---
+# --- FUNÇÕES DE EXTRAÇÃO DE TEXTO E CNPJ ---
 
 def extrair_cnpjs_de_texto(texto: str) -> list:
-    """Busca padrões de CNPJ (com ou sem formatação) no texto."""
-    padrao = r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b'
-    encontrados = re.findall(padrao, texto)
-    
+    """Busca padrões de CNPJ (com tratamento para erros comuns de OCR e máscaras)."""
     cnpjs_limpos = set()
-    for c in encontrados:
-        numeros = re.sub(r'\D', '', c)
+
+    # 1. Busca por CNPJ com formatação padrão (ex: 00.000.000/0000-00)
+    padrao_formatado = r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}'
+    encontrados_formatados = re.findall(padrao_formatado, texto)
+    for item in encontrados_formatados:
+        numeros = re.sub(r'\D', '', item)
         if len(numeros) == 14:
             cnpjs_limpos.add(numeros)
-            
+
+    # 2. Tratamento do texto para erros de OCR (substitui O/o por 0 e I/l por 1 em campos de código)
+    texto_trabalhado = texto.replace('O', '0').replace('o', '0').replace('I', '1').replace('l', '1')
+
+    # Busca por padrões genéricos mantendo pontuações/espaços próximos
+    padrao_generico = r'\b\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[/\s]?\d{4}[-\s]?\d{2}\b'
+    encontrados_genericos = re.findall(padrao_generico, texto_trabalhado)
+    for item in encontrados_genericos:
+        numeros = re.sub(r'\D', '', item)
+        if len(numeros) == 14:
+            cnpjs_limpos.add(numeros)
+
+    # 3. Fallback: Varre sequências de dígitos coladas (comum em campos de Inscrição Municipal/Prestador)
+    todas_sequencias = re.findall(r'\d{14,18}', re.sub(r'\D', ' ', texto_trabalhado))
+    for seq in todas_sequencias:
+        # Pega os primeiros 14 dígitos
+        cand = seq[:14]
+        if len(cand) == 14:
+            cnpjs_limpos.add(cand)
+
     return list(cnpjs_limpos)
 
 def ler_arquivo(uploaded_file) -> str:
