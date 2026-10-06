@@ -9,19 +9,25 @@ import pytesseract
 from difflib import SequenceMatcher
 
 # Configuração da página do Streamlit
-st.set_page_config(page_title="Validador de Documentos", page_icon="📋", layout="wide")
+st.set_page_config(page_title="Validador de Consolidação de Preços", page_icon="📋", layout="wide")
 
 st.title("📋 Validador de Documentos (PDDE / FNDE)")
-st.write("Faça upload do documento para identificar a sua classificação e validar CNPJs/Razões Sociais na Receita Federal.")
+st.write("Upload de formulários para identificação e validação flexível de CNPJ/Razão Social na Receita Federal.")
 
 # --- FUNÇÕES DE AUXÍLIO E EXTRAÇÃO DE TEXTO ---
 
 def similaridade_texto(a: str, b: str) -> float:
-    """Calcula a percentagem de semelhança entre duas strings."""
+    """Calcula a percentagem de semelhança entre duas strings (0 a 100%)."""
     if not a or not b:
         return 0.0
+    # Limpa pontuações e converte para minúsculas
     a_limpo = re.sub(r'[^\w\s]', '', a.lower()).strip()
     b_limpo = re.sub(r'[^\w\s]', '', b.lower()).strip()
+    
+    # Se a razão social oficial estiver contida no texto, consideramos alta similaridade
+    if a_limpo in b_limpo:
+        return 100.0
+        
     return SequenceMatcher(None, a_limpo, b_limpo).ratio() * 100
 
 def extrair_cnpjs_de_texto(texto: str) -> list:
@@ -53,7 +59,6 @@ def ler_arquivo(uploaded_file) -> str:
                     t = pagina.extract_text()
                     if t:
                         texto_extraido += t + "\n"
-            # Se o PDF for uma imagem escaneada sem camada de texto, usa OCR
             if not texto_extraido.strip():
                 uploaded_file.seek(0)
                 with pdfplumber.open(uploaded_file) as pdf:
@@ -92,7 +97,6 @@ def consultar_receita_federal(cnpj: str) -> dict:
         return {"erro": "Falha de conexão com a API da Receita Federal."}
 
 def formatar_cnpj(cnpj: str) -> str:
-    """Formata os 14 dígitos no padrão XX.XXX.XXX/XXXX-XX."""
     return f"{cnpj[:2]}.{cnpj[2:5]}.{cnpj[5:8]}/{cnpj[8:12]}-{cnpj[12:]}"
 
 # --- INTERFACE E FLUXO PRINCIPAL ---
@@ -114,10 +118,10 @@ if arquivo is not None:
     if "CONSOLIDACAO DE PESQUISAS DE PRECOS" in conteudo_texto.upper() or "CONSOLIDAÇÃO DE PESQUISAS DE PREÇOS" in conteudo_texto.upper():
         st.success("📄 **Documento Identificado:** Consolidação de Pesquisas de Preços")
     else:
-        st.info("ℹ️ **Documento Identificado:** Documento Genérico / Título 'Consolidação de Pesquisas de Preços' não localizador.")
+        st.info("ℹ️ **Documento Identificado:** Documento Genérico / Título não localizado com exatidão.")
 
     # 2. VALIDAÇÃO DOS CNPJS E RAZÕES SOCIAIS
-    st.subheader("2. Validação com a Receita Federal")
+    st.subheader("2. Validação na Receita Federal")
 
     if not cnpjs_encontrados:
         st.warning("⚠️ Nenhum campo de CNPJ válido foi identificado dentro do arquivo anexado.")
@@ -140,15 +144,17 @@ if arquivo is not None:
                     uf = dados.get("uf", "")
                     municipio = dados.get("municipio", "")
 
-                    # Checagem de CNPJ
-                    st.write(f"**CNPJ na Receita Federal:** ✅ Condiz (Status: **{situacao}**)")
+                    # Status do CNPJ
+                    st.write(f"**CNPJ na Receita Federal:** ✅ Ativo/Encontrado (Status: **{situacao}**)")
 
-                    # Checagem Cruzada da Razão Social (Procura a razão social oficial dentro do texto extraído)
-                    simil = similaridade_texto(razao_social_oficial, conteudo_texto)
-                    if razao_social_oficial.lower() in conteudo_texto.lower() or simil > 40:
-                        st.success(f"✅ **Razão Social:** CONDIZ com a Receita Federal (`{razao_social_oficial}`)")
+                    # Checagem Flexível de Razão Social (Tolerância a falhas do OCR)
+                    similaridade = similaridade_texto(razao_social_oficial, conteudo_texto)
+                    
+                    # Se houver pelo menos 25% de equivalência ou correspondência parcial, aceita como válido
+                    if similaridade > 25:
+                        st.success(f"✅ **Razão Social:** Aceita por aproximação (`{razao_social_oficial}`)")
                     else:
-                        st.warning(f"⚠️ **Razão Social:** Não foi possível confirmar se a razão social do documento condiz perfeitamente com a oficial (`{razao_social_oficial}`).")
+                        st.warning(f"⚠️ **Razão Social:** Divergência acentuada em relação à base oficial (`{razao_social_oficial}`).")
 
                     col1, col2 = st.columns(2)
                     with col1:
