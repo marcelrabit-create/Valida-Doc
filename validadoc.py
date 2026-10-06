@@ -221,7 +221,7 @@ def validar_consolidacao_precos(texto: str) -> list:
 
     return erros
 
-# --- EXTRAÇÃO DE TEXTO GERAL ---
+# --- EXTRAÇÃO DE TEXTO E CORREÇÃO DE ORIENTAÇÃO DE IMAGENS ---
 
 def corrigir_substituicoes_ocr(string_cand: str) -> str:
     mapeamento = {
@@ -262,13 +262,18 @@ def ler_arquivo(uploaded_file) -> str:
     try:
         if extensao in ['jpg', 'jpeg', 'png']:
             imagem = Image.open(uploaded_file)
-            texto_extraido += pytesseract.image_to_string(imagem, lang='por') + "\n"
             
-            img_cinza = imagem.convert('L')
-            enhancer = ImageEnhance.Contrast(img_cinza)
-            img_contraste = enhancer.enhance(2.5)
-            texto_extraido += pytesseract.image_to_string(img_contraste, lang='por') + "\n"
-            texto_extraido += pytesseract.image_to_string(img_contraste, lang='por', config='--psm 6') + "\n"
+            # Testa todos os 4 ângulos cardinais (0º, 90º, 180º, 270º) para garantir que imagens deitadas ou invertidas sejam lidas perfeitamente
+            for angulo in [0, 90, 180, 270]:
+                img_rotacionada = imagem.rotate(angulo, expand=True) if angulo != 0 else imagem
+                
+                texto_extraido += pytesseract.image_to_string(img_rotacionada, lang='por') + "\n"
+                
+                img_cinza = img_rotacionada.convert('L')
+                enhancer = ImageEnhance.Contrast(img_cinza)
+                img_contraste = enhancer.enhance(2.5)
+                texto_extraido += pytesseract.image_to_string(img_contraste, lang='por') + "\n"
+                texto_extraido += pytesseract.image_to_string(img_contraste, lang='por', config='--psm 6') + "\n"
 
         elif extensao == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
@@ -358,7 +363,7 @@ if st.session_state.validado:
         ]
 
         if not cnpjs_para_exibir:
-            st.warning("⚠️ Nenhum CNPJ de fornecedor/emitente válido foi encontrado no arquivo anexado.")
+            st.warning("⚠️️ Nenhum CNPJ de fornecedor/emitente válido foi encontrado no arquivo anexado.")
         else:
             for cnpj in cnpjs_para_exibir:
                 dados = consultar_receita_federal(cnpj)
@@ -407,7 +412,7 @@ if st.session_state.validado:
             st.success("✅ Nenhum erro encontrado nos blocos III e IV da consolidação.")
 
     st.divider()
-    if st.button("⬅️ Voltar (Nova Validação)", use_container_width=True):
+    if st.button("⬅ Voltar (Nova Validação)", use_container_width=True):
         st.session_state.validado = False
         st.session_state.texto_processado = ""
         st.session_state.tipo_doc = ""
