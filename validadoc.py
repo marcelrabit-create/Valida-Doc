@@ -4,7 +4,7 @@ import requests
 import json
 import pandas as pd
 import pdfplumber
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 import pytesseract
 
 # Configuração da página
@@ -90,36 +90,45 @@ def identificar_tipo_documento(texto: str) -> str:
 # --- FUNÇÕES DE EXTRAÇÃO DE TEXTO E CNPJ ---
 
 def extrair_cnpjs_de_texto(texto: str) -> list:
-    """Busca padrões de CNPJ (com tratamento para erros comuns de OCR e máscaras)."""
+    """Busca padrões de CNPJ (com tratamento abrangente para falhas de OCR)."""
     cnpjs_limpos = set()
 
-    # 1. Busca por CNPJ com formatação padrão (ex: 00.000.000/0000-00)
+    # 1. Padrão estrito de CNPJ formatado (XX.XXX.XXX/XXXX-XX)
     padrao_formatado = r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}'
-    encontrados_formatados = re.findall(padrao_formatado, texto)
-    for item in encontrados_formatados:
-        numeros = re.sub(r'\D', '', item)
-        if len(numeros) == 14:
-            cnpjs_limpos.add(numeros)
+    for item in re.findall(padrao_formatado, texto):
+        num = re.sub(r'\D', '', item)
+        if len(num) == 14:
+            cnpjs_limpos.add(num)
 
-    # 2. Tratamento do texto para erros comuns de OCR (converte O/o para 0 e I/l para 1)
-    texto_trabalhado = texto.replace('O', '0').replace('o', '0').replace('I', '1').replace('l', '1')
+    # 2. Limpeza de substituições comuns do OCR (O -> 0, I/l -> 1)
+    texto_modificado = texto.replace('O', '0').replace('o', '0').replace('I', '1').replace('l', '1')
 
-    # Busca por padrões genéricos mantendo pontuações/espaços próximos
-    padrao_generico = r'\b\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[/\s]?\d{4}[-\s]?\d{2}\b'
-    encontrados_genericos = re.findall(padrao_generico, texto_trabalhado)
-    for item in encontrados_genericos:
-        numeros = re.sub(r'\D', '', item)
-        if len(numeros) == 14:
-            cnpjs_limpos.add(numeros)
+    # Busca padrão flexível com pontuações ou espaços variados
+    padrao_flexivel = r'\d{2}[^\d]?\d{3}[^\d]?\d{3}[^\d]?\d{4}[^\d]?\d{2}'
+    for item in re.findall(padrao_flexivel, texto_modificado):
+        num = re.sub(r'\D', '', item)
+        if len(num) == 14:
+            cnpjs_limpos.add(num)
 
-    # 3. Fallback: Varre sequências de dígitos de 14 a 18 números no texto limpo
-    todas_sequencias = re.findall(r'\d{14,18}', re.sub(r'\D', ' ', texto_trabalhado))
-    for seq in todas_sequencias:
-        cand = seq[:14]
-        if len(cand) == 14:
-            cnpjs_limpos.add(cand)
+    # 3. Fallback: extrai todos os blocos contínuos de dígitos e varre janelas de 14 números
+    apenas_numeros = re.sub(r'\D', ' ', texto_modificado)
+    blocos = apenas_numeros.split()
+    for bloco in blocos:
+        if len(bloco) >= 14:
+            # Tenta pegar sequências de 14 dígitos no bloco
+            for i in range(len(bloco) - 13):
+                cand = bloco[i:i+14]
+                if len(cand) == 14:
+                    cnpjs_limpos.add(cand)
 
     return list(cnpjs_limpos)
+
+def pre_processar_imagem(img: Image.Image) -> Image.Image:
+    """Aplica contraste e nitidez para facilitar o OCR do Tesseract."""
+    img = img.convert('L') # Escala de cinza
+    enhancer = ImageEnhance.Contrast(img)
+    img = enhancer.enhance(2.0) # Aumenta contraste
+    return img
 
 def ler_arquivo(uploaded_file) -> str:
     """Lê o arquivo anexado dependendo da extensão e retorna o texto extraído."""
@@ -129,7 +138,13 @@ def ler_arquivo(uploaded_file) -> str:
     try:
         if extensao in ['jpg', 'jpeg', 'png']:
             imagem = Image.open(uploaded_file)
+            # OCR primário
             texto_extraido = pytesseract.image_to_string(imagem, lang='por')
+            
+            # Se não extraiu texto suficiente, tenta com pré-processamento de imagem
+            if len(texto_extraido.strip()) < 30:
+                imagem_tratada = pre_processar_imagem(imagem)
+                texto_extraido += "\n" + pytesseract.image_to_string(imagem_tratada, lang='por')
 
         elif extensao == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
@@ -142,7 +157,8 @@ def ler_arquivo(uploaded_file) -> str:
                 with pdfplumber.open(uploaded_file) as pdf:
                     for pagina in pdf.pages:
                         img = pagina.to_image().original
-                        texto_extraido += pytesseract.image_to_string(img, lang='por') + "\n"
+                        img_tratada = pre_processar_imagem(img)
+                        texto_extraido += pytesseract.image_to_string(img_tratada, lang='por') + "\n"
 
         elif extensao == 'txt':
             texto_extraido = uploaded_file.read().decode('utf-8', errors='ignore')
