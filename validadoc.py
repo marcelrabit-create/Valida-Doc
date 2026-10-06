@@ -104,34 +104,25 @@ def identificar_tipo_documento(texto: str) -> str:
 # --- EXTRAÇÃO DO ITEM 01 E ITEM 02 DO BLOCO I ---
 
 def extrair_bloco_i_unidade(texto: str) -> dict:
-    """Isola o Bloco I e extrai o item 01 (Razão Social) e o item 02 (CNPJ)."""
-    texto_upper = texto.upper()
-    bloco_i_texto = ""
-
-    if "BLOCO I" in texto_upper:
-        partes = texto_upper.split("BLOCO I")
-        resto = partes[1]
-        for prox in ["BLOCO II", "BLOCO III", "BLOCO IV", "BLOCO V"]:
-            if prox in resto:
-                resto = resto.split(prox)[0]
-        bloco_i_texto = resto
-
+    """Isola o Bloco I e extrai estritamente o item 01 (Razão Social) e o item 02 (CNPJ)."""
+    # Remove quebras de linha excessivas e limpa o texto mantendo a estrutura
+    texto_limpo = re.sub(r'\s+', ' ', texto)
+    
     razao_social = "Não identificada"
     cnpj_encontrado = "Não encontrado"
 
-    # Extração do Item 01 (Razão Social da Unidade Escolar)
-    match_rs = re.search(r'(?:0?1\s*[-–]?\s*RAZÃO\s*SOCIAL|0?1)[:\s]*([^\n]+)', bloco_i_texto)
-    if match_rs:
-        razao_social = match_rs.group(1).strip()
+    # Captura o texto exato entre o marcador '01' / '01 - Razão Social' e o '02 - CNPJ'
+    match_bloco = re.search(r'01\s*[-–]?\s*Razão Social\s*(.*?)\s*02\s*[-–]?\s*CNPJ', texto, re.IGNORECASE)
+    if match_bloco:
+        razao_social = match_bloco.group(1).replace('\n', ' ').strip()
     else:
-        for padrao in [r'RAZÃO\s*SOCIAL[:\s]*([^\n]+)', r'ESCOLA[:\s]*([^\n]+)']:
-            m = re.search(padrao, bloco_i_texto)
-            if m:
-                razao_social = m.group(1).strip()
-                break
+        # Fallback genérico para capturar logo após o Bloco I
+        match_rs = re.search(r'BLOCO\s*I\s*[-–]?\s*IDENTIFICAÇÃO.*?(?:01|1)\s*[-–]?.*?(?:Razão Social)?[:\s]*([A-ZÇÃÕÉÊÁÓÚ\s]+)', texto, re.IGNORECASE)
+        if match_rs:
+            razao_social = match_rs.group(1).replace('\n', ' ').strip()
 
-    # Extração do Item 02 (CNPJ da Unidade Escolar)
-    match_cnpj = re.search(r'(?:0?2\s*[-–]?\s*CNPJ|0?2)[:\s]*([0-9\.\-/]+)', bloco_i_texto)
+    # Captura o CNPJ logo após o item '02' do Bloco I
+    match_cnpj = re.search(r'02\s*[-–]?\s*CNPJ\s*[:\s]*([0-9\.\-/]+)', texto, re.IGNORECASE)
     if match_cnpj:
         c_limpo = re.sub(r'\D', '', match_cnpj.group(1))
         if len(c_limpo) == 14:
@@ -139,10 +130,11 @@ def extrair_bloco_i_unidade(texto: str) -> dict:
         else:
             cnpj_encontrado = match_cnpj.group(1).strip()
     else:
+        # Varredura de fallback para encontrar o CNPJ da UEX no início do texto
         padrao_cnpj = r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b'
-        cnpjs_bloco_i = re.findall(padrao_cnpj, bloco_i_texto)
-        if cnpjs_bloco_i:
-            c_limpo = re.sub(r'\D', '', cnpjs_bloco_i[0])
+        cnpjs = re.findall(padrao_cnpj, texto[:500]) # Primeiros caracteres costumam conter o Bloco I
+        if cnpjs:
+            c_limpo = re.sub(r'\D', '', cnpjs[0])
             if len(c_limpo) == 14:
                 cnpj_encontrado = f"{c_limpo[:2]}.{c_limpo[2:5]}.{c_limpo[5:8]}/{c_limpo[8:12]}-{c_limpo[12:]}"
 
