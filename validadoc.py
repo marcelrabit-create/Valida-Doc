@@ -132,6 +132,7 @@ def consultar_receita_federal(cnpj: str) -> dict:
                             "razao_social": dados.get("razao_social") or dados.get("nome", "N/A"),
                             "nome_fantasia": dados.get("nome_fantasia") or dados.get("fantasia", "Não informado"),
                             "descricao_situacao_cadastral": dados.get("descricao_situacao_cadastral") or dados.get("situacao", "DESCONHECIDA"),
+                            "data_situacao": dados.get("data_situacao_cadastral") or dados.get("data_situacao", "Não informada"),
                             "uf": dados.get("uf", ""),
                             "municipio": dados.get("municipio", ""),
                             "cnae_fiscal_descricao": dados.get("cnae_fiscal_descricao") or (dados.get("atividade_principal", [{}]) or [{}])[0].get("text", "N/A")
@@ -141,6 +142,7 @@ def consultar_receita_federal(cnpj: str) -> dict:
                             "razao_social": dados.get("nome", "N/A"),
                             "nome_fantasia": dados.get("fantasia", "Não informado"),
                             "descricao_situacao_cadastral": dados.get("situacao", "DESCONHECIDA"),
+                            "data_situacao": dados.get("data_situacao", "Não informada"),
                             "uf": dados.get("uf", ""),
                             "municipio": dados.get("municipio", ""),
                             "cnae_fiscal_descricao": (dados.get("atividade_principal", [{}]) or [{}])[0].get("text", "N/A")
@@ -372,15 +374,16 @@ if st.session_state.validado:
                         continue
 
                     situacao = dados.get("descricao_situacao_cadastral", "DESCONHECIDA")
+                    data_situacao = dados.get("data_situacao", "Não informada")
                     nome_fantasia = dados.get("nome_fantasia") or "Não informado"
                     uf = dados.get("uf", "")
                     municipio = dados.get("municipio", "")
 
                     with st.expander(f"CNPJ: {cnpj_formatado}", expanded=True):
-                        if situacao.upper() == "ATIVO":
+                        if situacao.upper() == "ATIVA":
                             st.success(f"**Situação Cadastral:** {situacao}")
                         else:
-                            st.warning(f"**Situação Cadastral:** {situacao}")
+                            st.warning(f"**Situação Cadastral:** {situacao} (Data da alteração: {data_situacao})")
 
                         col1, col2 = st.columns(2)
                         with col1:
