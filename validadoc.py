@@ -331,57 +331,58 @@ if st.session_state.validado:
         st.write(f"**Razão Social:** {razao_social_uex}")
         st.write(f"**CNPJ:** {cnpj_formatado_uex}")
 
-    # 2º: VALIDAÇÃO NA RECEITA FEDERAL (DOS FORNECEDORES/PROPONENTES)
-    if st.session_state.tipo_doc != "Documento Genérico / Não Identificado":
-        st.divider()
-        st.subheader("🔍 Validação na Receita Federal")
+    import time
 
-        cnpjs_encontrados = extrair_cnpjs_de_texto(st.session_state.texto_processado)
+# --- CONSULTA À RECEITA FEDERAL COM MÚLTIPLAS APIS DE CONTINGÊNCIA ---
+
+@st.cache_data(ttl=3600)
+def consultar_receita_federal(cnpj: str) -> dict:
+    """Consulta múltiplas APIs públicas de CNPJ em cascata para evitar falhas de instabilidade."""
+    cnpj_limpo = re.sub(r'\D', '', str(cnpj))
+    
+    # Lista de APIs públicas alternativas ordenadas por confiabilidade
+    endpoints = [
+        f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_limpo}",
+        f"https://minhareceita.org/{cnpj_limpo}",
+        f"https://receitaws.com.br/v1/cnpj/{cnpj_limpo}"
+    ]
+
+    for tentativa in range(2):
+        for url in endpoints:
+            try:
+                response = requests.get(url, timeout=7)
+                if response.status_code == 200:
+                    dados = response.json()
+                    
+                    # Normalização para o padrão da BrasilAPI / Minha Receita
+                    if "minhareceita.org" in url or "brasilapi" in url:
+                        return {
+                            "razao_social": dados.get("razao_social") or dados.get("nome", "N/A"),
+                            "nome_fantasia": dados.get("nome_fantasia") or dados.get("fantasia", "Não informado"),
+                            "descricao_situacao_cadastral": dados.get("descricao_situacao_cadastral") or dados.get("situacao", "DESCONHECIDA"),
+                            "uf": dados.get("uf", ""),
+                            "municipio": dados.get("municipio", ""),
+                            "cnae_fiscal_descricao": dados.get("cnae_fiscal_descricao") or (dados.get("atividade_principal", [{}]) or [{}])[0].get("text", "N/A")
+                        }
+                    # Normalização para a ReceitaWS
+                    elif dados.get("status") != "ERROR":
+                        return {
+                            "razao_social": dados.get("nome", "N/A"),
+                            "nome_fantasia": dados.get("fantasia", "Não informado"),
+                            "descricao_situacao_cadastral": dados.get("situacao", "DESCONHECIDA"),
+                            "uf": dados.get("uf", ""),
+                            "municipio": dados.get("municipio", ""),
+                            "cnae_fiscal_descricao": (dados.get("atividade_principal", [{}]) or [{}])[0].get("text", "N/A")
+                        }
+                elif response.status_code == 404:
+                    return {"erro": "CNPJ não encontrado na base da Receita Federal."}
+            except (requests.RequestException, requests.Timeout):
+                pass
         
-        # Normaliza o CNPJ da UEX para garantir a exclusão correta da lista de fornecedores
-        cnpj_uex_limpo = re.sub(r'\D', '', str(cnpj_uex)) if 'cnpj_uex' in locals() and cnpj_uex else ""
+        time.sleep(1)
 
-        # Exclui o CNPJ da Unidade Escolar e o CNPJ padrão do conselho da lista de proponentes
-        cnpjs_para_exibir = [
-            c for c in cnpjs_encontrados 
-            if re.sub(r'\D', '', c) != "06697670000195" and (not cnpj_uex_limpo or re.sub(r'\D', '', c) != cnpj_uex_limpo)
-        ]
-
-        if not cnpjs_para_exibir:
-            st.warning("⚠️ Nenhum CNPJ de fornecedor/emitente válido foi encontrado no arquivo anexado.")
-        else:
-            for cnpj in cnpjs_para_exibir:
-                dados = consultar_receita_federal(cnpj)
-                cnpj_formatado = formatar_cnpj(cnpj)
-
-                if isinstance(dados, dict) and "erro" in dados:
-                    with st.expander(f"CNPJ: {cnpj_formatado}", expanded=True):
-                        st.error(f"❌ **CNPJ {cnpj_formatado}:** {dados['erro']}")
-                else:
-                    razao_social_oficial = dados.get("razao_social", "N/A")
-
-                    if "CONSELHO DE ESCOLA" in razao_social_oficial.upper():
-                        continue
-
-                    situacao = dados.get("descricao_situacao_cadastral", "DESCONHECIDA")
-                    nome_fantasia = dados.get("nome_fantasia") or "Não informado"
-                    uf = dados.get("uf", "")
-                    municipio = dados.get("municipio", "")
-
-                    with st.expander(f"CNPJ: {cnpj_formatado}", expanded=True):
-                        if situacao.upper() == "ATIVO":
-                            st.success(f"**Situação Cadastral:** {situacao}")
-                        else:
-                            st.warning(f"**Situação Cadastral:** {situacao}")
-
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write(f"**Razão Social Oficial:** {razao_social_oficial}")
-                            st.write(f"**Nome Fantasia:** {nome_fantasia}")
-                        with col2:
-                            st.write(f"**Cidade/UF:** {municipio} - {uf}")
-                            st.write(f"**Atividade Principal:** {dados.get('cnae_fiscal_descricao', 'N/A')}")
-
+    return {"erro": "A API pública de consulta está temporariamente indisponível para este CNPJ de filial. Tente novamente em instantes."}
+    
     # 3º: VALIDAÇÃO DOS BLOCOS (SE FOR CONSOLIDAÇÃO DE PREÇOS)
     if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
         st.divider()
