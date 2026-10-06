@@ -40,7 +40,25 @@ if st.session_state.sessao_encerrada:
     st.stop()
 
 st.title("📋 Validador de Documentos")
-st.write("Faça upload do documento para validar as informações.")
+st.write("Faça upload do documento para identificar o tipo e validar os CNPJs na Receita Federal.")
+
+# --- FUNÇÃO DE CLASSIFICAÇÃO DO DOCUMENTO ---
+
+def identificar_tipo_documento(texto: str) -> str:
+    """Classifica o documento com base em palavras-chave encontradas no texto."""
+    texto_upper = texto.upper()
+
+    if "CONSOLIDACAO DE PESQUISAS DE PRECOS" in texto_upper or "CONSOLIDAÇÃO DE PESQUISAS DE PREÇOS" in texto_upper or "PDDE" in texto_upper:
+        return "Consolidação de Pesquisas de Preços"
+    
+    elif "NOTA FISCAL DE SERVICOS" in texto_upper or "NOTA FISCAL DE SERVIÇOS" in texto_upper or "NFS-E" in texto_upper or "NFSE" in texto_upper or "PRESTAÇÃO DE SERVIÇOS" in texto_upper:
+        return "Nota Fiscal de Serviços"
+    
+    elif "DANFE" in texto_upper or "NOTA FISCAL ELETRÔNICA" in texto_upper or "NOTA FISCAL ELETRONICA" in texto_upper or "NF-E" in texto_upper or "DOCUMENTO AUXILIAR DA NOTA FISCAL" in texto_upper:
+        return "Nota Fiscal de Compra de Materiais"
+    
+    else:
+        return "Documento Genérico / Não Identificado"
 
 # --- FUNÇÕES DE EXTRAÇÃO DE TEXTO ---
 
@@ -126,16 +144,22 @@ if arquivo is not None:
     with st.spinner("Lendo e processando o documento..."):
         conteudo_texto = ler_arquivo(arquivo)
         cnpjs_encontrados = extrair_cnpjs_de_texto(conteudo_texto)
-
-        # Identificação silenciosa do documento
-        eh_consolida_precos = (
-            "CONSOLIDACAO DE PESQUISAS DE PRECOS" in conteudo_texto.upper() or 
-            "CONSOLIDAÇÃO DE PESQUISAS DE PREÇOS" in conteudo_texto.upper()
-        )
+        tipo_documento = identificar_tipo_documento(conteudo_texto)
 
     st.divider()
 
-    # RESULTADOS DA VALIDAÇÃO NA RECEITA FEDERAL
+    # 1. IDENTIFICAÇÃO DO TIPO DE DOCUMENTO
+    st.subheader("📄 Tipo de Documento")
+    if tipo_documento != "Documento Genérico / Não Identificado":
+        st.success(f"**Identificado como:** {tipo_documento}")
+    else:
+        st.info(f"**Identificado como:** {tipo_documento}")
+
+    st.divider()
+
+    # 2. RESULTADOS DA VALIDAÇÃO NA RECEITA FEDERAL
+    st.subheader("🔍 Validação na Receita Federal")
+
     if not cnpjs_encontrados:
         st.warning("⚠️ Nenhum CNPJ válido foi encontrado no arquivo anexado.")
     else:
@@ -144,7 +168,7 @@ if arquivo is not None:
 
             if "erro" in dados:
                 cnpj_formatado = formatar_cnpj(cnpj)
-                with st.expander(f"🔍 CNPJ: {cnpj_formatado}", expanded=True):
+                with st.expander(f"CNPJ: {cnpj_formatado}", expanded=True):
                     st.error(f"❌ **CNPJ {cnpj_formatado}:** {dados['erro']}")
             else:
                 razao_social_oficial = dados.get("razao_social", "N/A")
@@ -159,7 +183,7 @@ if arquivo is not None:
                 uf = dados.get("uf", "")
                 municipio = dados.get("municipio", "")
 
-                with st.expander(f"🔍 CNPJ: {cnpj_formatado}", expanded=True):
+                with st.expander(f"CNPJ: {cnpj_formatado}", expanded=True):
                     if situacao.upper() == "ATIVO":
                         st.success(f"**Situação Cadastral:** {situacao}")
                     else:
