@@ -149,13 +149,22 @@ def formatar_cnpj(cnpj: str) -> str:
 
 def extrair_cnpj_unidade_escolar(texto: str) -> str:
     """Extrai o CNPJ estritamente contido no Bloco I (Identificação da Unidade Executora Própria)."""
-    # Isola apenas a parte do texto correspondente ao Bloco I (antes do Bloco II)
-    bloco_i_texto = texto
-    if "BLOCO II" in texto.upper():
-        bloco_i_texto = texto.upper().split("BLOCO II")[0]
-    elif "BLOCO III" in texto.upper():
-        bloco_i_texto = texto.upper().split("BLOCO III")[0]
+    # Procura especificamente pela âncora do Bloco I ou pelo rótulo do item 02
+    texto_upper = texto.upper()
+    
+    # Tenta encontrar o trecho exato do Bloco I até o Bloco II
+    bloco_i_texto = texto_upper
+    if "BLOCO II" in texto_upper:
+        bloco_i_texto = texto_upper.split("BLOCO II")[0]
+    
+    # Busca por um CNPJ que venha após o rótulo "02 - CNPJ" ou próximo de "UNIDADE EXECUTORA" / "BLOCO I"
+    match_rotulo = re.search(r'(?:0?2\s*[-–]?\s*CNPJ|CNPJ)[:\s]*([0-9\.\-/]{14,18})', bloco_i_texto)
+    if match_rotulo:
+        c_limpo = re.sub(r'\D', '', match_rotulo.group(1))
+        if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo):
+            return c_limpo
 
+    # Se não achar pelo rótulo exato, pega todos os CNPJs do Bloco I e valida o primeiro matematicamente
     padrao_cnpj = r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b'
     cnpjs = re.findall(padrao_cnpj, bloco_i_texto)
     
@@ -163,6 +172,7 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
         c_limpo = re.sub(r'\D', '', c)
         if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo):
             return c_limpo
+            
     return ""
 
 # --- VALIDAÇÕES ESPECÍFICAS PARA CONSOLIDAÇÃO DE PREÇOS ---
