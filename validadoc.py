@@ -28,9 +28,6 @@ if "sessao_encerrada" not in st.session_state:
 if "uploader_key" not in st.session_state:
     st.session_state.uploader_key = 0
 
-if "validado" not in st.session_state:
-    st.session_state.validado = False
-
 # --- TELA DE SESSÃO ENCERRADA ---
 if st.session_state.sessao_encerrada:
     st.title("📋 Validador de Documentos")
@@ -38,7 +35,6 @@ if st.session_state.sessao_encerrada:
     
     if st.button("Nova Consulta / Iniciar Novamente", type="primary"):
         st.session_state.sessao_encerrada = False
-        st.session_state.validado = False
         st.session_state.uploader_key += 1
         st.rerun()
     st.stop()
@@ -141,22 +137,13 @@ def formatar_cnpj(cnpj: str) -> str:
 
 # --- INTERFACE E FLUXO PRINCIPAL ---
 
-# Exibe o uploader desabilitado se já foi validado
 arquivo = st.file_uploader(
     "Anexe o documento (PDF, JPG, JPEG, PNG, TXT, XLS, XLSM)",
     type=["pdf", "jpg", "jpeg", "png", "txt", "xls", "xlsm", "xlsx"],
-    key=f"uploader_{st.session_state.uploader_key}",
-    disabled=st.session_state.validado
+    key=f"uploader_{st.session_state.uploader_key}"
 )
 
-if st.session_state.validado:
-    st.info("ℹ️ Documento já processado. Para validar outro documento, clique no botão **Voltar (Nova Validação)** abaixo.")
-
-if arquivo is not None and not st.session_state.validado:
-    st.session_state.validado = True
-    st.rerun()
-
-if st.session_state.validado and arquivo is not None:
+if arquivo is not None:
     with st.spinner("Lendo e processando o documento..."):
         conteudo_texto = ler_arquivo(arquivo)
         cnpjs_encontrados = extrair_cnpjs_de_texto(conteudo_texto)
@@ -219,7 +206,6 @@ if st.session_state.validado and arquivo is not None:
     
     with btn_col1:
         if st.button("⬅️ Voltar (Nova Validação)", use_container_width=True):
-            st.session_state.validado = False
             st.session_state.uploader_key += 1
             st.rerun()
 
