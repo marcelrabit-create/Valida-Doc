@@ -7,13 +7,10 @@ import pdfplumber
 from PIL import Image
 import pytesseract
 
-# Configuração da página do Streamlit
+# Configuração da página
 st.set_page_config(page_title="Validador de Documentos", page_icon="📋", layout="wide")
 
-st.title("📋 Validador de Documentos")
-st.write("Faça upload do documento para extrair e consultar os CNPJs na Receita Federal.")
-
-# --- OCULTAR ELEMENTOS PADRÃO DO STREAMLIT ---
+# --- OCULTAR ELEMENTOS E MARCA DO STREAMLIT ---
 ocultar_elementos_streamlit = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -23,6 +20,9 @@ ocultar_elementos_streamlit = """
     </style>
 """
 st.markdown(ocultar_elementos_streamlit, unsafe_allow_html=True)
+
+st.title("📋 Validador de Documentos")
+st.write("Faça upload do documento para extrair e consultar os CNPJs na Receita Federal.")
 
 # --- FUNÇÕES DE EXTRAÇÃO DE TEXTO ---
 
@@ -107,7 +107,7 @@ if arquivo is not None:
         conteudo_texto = ler_arquivo(arquivo)
         cnpjs_encontrados = extrair_cnpjs_de_texto(conteudo_texto)
 
-        # Identificação silenciosa do documento (lógica interna)
+        # Identificação silenciosa do documento
         eh_consolida_precos = (
             "CONSOLIDACAO DE PESQUISAS DE PRECOS" in conteudo_texto.upper() or 
             "CONSOLIDAÇÃO DE PESQUISAS DE PREÇOS" in conteudo_texto.upper()
@@ -119,25 +119,27 @@ if arquivo is not None:
     if not cnpjs_encontrados:
         st.warning("⚠️ Nenhum CNPJ válido foi encontrado no arquivo anexado.")
     else:
-        st.write(f"Foram identificados **{len(cnpjs_encontrados)}** CNPJ(s) no documento.")
-
         for cnpj in cnpjs_encontrados:
-            cnpj_formatado = formatar_cnpj(cnpj)
-            
-            with st.expander(f"🔍 CNPJ: {cnpj_formatado}", expanded=True):
-                with st.spinner("Consultando dados na Receita Federal..."):
-                    dados = consultar_receita_federal(cnpj)
+            dados = consultar_receita_federal(cnpj)
 
-                if "erro" in dados:
+            if "erro" in dados:
+                cnpj_formatado = formatar_cnpj(cnpj)
+                with st.expander(f"🔍 CNPJ: {cnpj_formatado}", expanded=True):
                     st.error(f"❌ **CNPJ {cnpj_formatado}:** {dados['erro']}")
-                else:
-                    situacao = dados.get("descricao_situacao_cadastral", "DESCONHECIDA")
-                    razao_social_oficial = dados.get("razao_social", "N/A")
-                    nome_fantasia = dados.get("nome_fantasia") or "Não informado"
-                    uf = dados.get("uf", "")
-                    municipio = dados.get("municipio", "")
+            else:
+                razao_social_oficial = dados.get("razao_social", "N/A")
 
-                    # Destaque para a situação cadastral
+                # FILTRO: Se for "Conselho de Escola", ignora e não exibe na tela
+                if "CONSELHO DE ESCOLA" in razao_social_oficial.upper():
+                    continue
+
+                cnpj_formatado = formatar_cnpj(cnpj)
+                situacao = dados.get("descricao_situacao_cadastral", "DESCONHECIDA")
+                nome_fantasia = dados.get("nome_fantasia") or "Não informado"
+                uf = dados.get("uf", "")
+                municipio = dados.get("municipio", "")
+
+                with st.expander(f"🔍 CNPJ: {cnpj_formatado}", expanded=True):
                     if situacao.upper() == "ATIVO":
                         st.success(f"**Situação Cadastral:** {situacao}")
                     else:
