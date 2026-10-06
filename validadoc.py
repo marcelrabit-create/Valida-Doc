@@ -11,9 +11,6 @@ import pytesseract
 st.set_page_config(page_title="Validador de Documentos", page_icon="📋", layout="wide")
 
 # Inicialização do estado da sessão
-if "sessao_encerrada" not in st.session_state:
-    st.session_state.sessao_encerrada = False
-
 if "uploader_key" not in st.session_state:
     st.session_state.uploader_key = 0
 
@@ -29,7 +26,7 @@ estilo_css = """
     .stAppHeader {display: none;}
 """
 
-# Só oculta a área de upload após o término completo da validação
+# Oculta a área de upload após o término completo da validação
 if st.session_state.validado:
     estilo_css += """
     div[data-testid="stFileUploader"] {
@@ -39,18 +36,6 @@ if st.session_state.validado:
 
 estilo_css += " </style>"
 st.markdown(estilo_css, unsafe_allow_html=True)
-
-# --- TELA DE SESSÃO ENCERRADA ---
-if st.session_state.sessao_encerrada:
-    st.title("📋 Validador de Documentos")
-    st.info("👋 Sessão encerrada com sucesso. Obrigado por utilizar o validador!")
-    
-    if st.button("Nova Consulta / Iniciar Novamente", type="primary"):
-        st.session_state.sessao_encerrada = False
-        st.session_state.validado = False
-        st.session_state.uploader_key += 1
-        st.rerun()
-    st.stop()
 
 st.title("📋 Validador de Documentos")
 st.write("Faça upload do documento para identificar o tipo e validar os CNPJs na Receita Federal.")
@@ -218,17 +203,9 @@ if arquivo is not None:
         st.session_state.validado = True
         st.rerun()
 
-    # --- BOTÕES DE NAVEGAÇÃO E ENCERRAMENTO ---
+    # --- BOTÃO DE NAVEGAÇÃO ---
     st.divider()
-    btn_col1, btn_col2 = st.columns(2)
-    
-    with btn_col1:
-        if st.button("⬅️ Voltar (Nova Validação)", use_container_width=True):
-            st.session_state.validado = False
-            st.session_state.uploader_key += 1
-            st.rerun()
-
-    with btn_col2:
-        if st.button("🔴 Sair", use_container_width=True):
-            st.session_state.sessao_encerrada = True
-            st.rerun()
+    if st.button("⬅️ Voltar (Nova Validação)", use_container_width=True):
+        st.session_state.validado = False
+        st.session_state.uploader_key += 1
+        st.rerun()
