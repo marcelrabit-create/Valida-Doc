@@ -50,12 +50,34 @@ def identificar_tipo_documento(texto: str) -> str:
     if "CONSOLIDACAO DE PESQUISAS DE PRECOS" in texto_upper or "CONSOLIDAÇÃO DE PESQUISAS DE PREÇOS" in texto_upper or "BLOCO I - IDENTIFICAÇÃO" in texto_upper:
         return "Consolidação de Pesquisas de Preços"
     
-    # 2. Nota Fiscal de Serviços (NFS-e)
-    elif "NOTA FISCAL DE SERVICOS" in texto_upper or "NOTA FISCAL DE SERVIÇOS" in texto_upper or "NFS-E" in texto_upper or "NFSE" in texto_upper or "PRESTACAO DE SERVICOS" in texto_upper or "PRESTAÇÃO DE SERVIÇOS" in texto_upper:
+    # 2. Nota Fiscal de Serviços (NFS-e / Municipal)
+    elif (
+        "NOTA FISCAL DE SERVICOS" in texto_upper or 
+        "NOTA FISCAL DE SERVIÇOS" in texto_upper or 
+        "NOTA FISCAL ELETRÔNICA DE SERVIÇO" in texto_upper or 
+        "NOTA FISCAL ELETRONICA DE SERVICO" in texto_upper or 
+        "NFS-E" in texto_upper or 
+        "NFSE" in texto_upper or 
+        "PRESTADOR DE SERVIÇOS" in texto_upper or 
+        "PRESTADOR DE SERVICOS" in texto_upper or 
+        "TOMADOR DE SERVIÇOS" in texto_upper or 
+        "DISCRIMINAÇÃO DOS SERVIÇOS" in texto_upper or 
+        "DISCRIMINACAO DOS SERVICOS" in texto_upper or 
+        "VALOR DOS SERVIÇOS" in texto_upper or 
+        "VALOR DOS SERVICOS" in texto_upper
+    ):
         return "Nota Fiscal de Serviços"
     
     # 3. Nota Fiscal de Compra de Materiais (DANFE / NF-e / Venda de Mercadoria)
-    elif "DANFE" in texto_upper or "DOCUMENTO AUXILIAR DA NOTA FISCAL" in texto_upper or "VENDA DE MERCADORIA" in texto_upper or "NFE" in texto_upper or "NF-E" in texto_upper or "CHAVE DE ACESSO" in texto_upper or "DADOS DOS PRODUTOS" in texto_upper:
+    elif (
+        "DANFE" in texto_upper or 
+        "DOCUMENTO AUXILIAR DA NOTA FISCAL" in texto_upper or 
+        "VENDA DE MERCADORIA" in texto_upper or 
+        "NFE" in texto_upper or 
+        "NF-E" in texto_upper or 
+        "CHAVE DE ACESSO" in texto_upper or 
+        "DADOS DOS PRODUTOS" in texto_upper
+    ):
         return "Nota Fiscal de Compra de Materiais"
     
     else:
@@ -205,7 +227,7 @@ if arquivo is not None:
 
     # --- BOTÃO DE NAVEGAÇÃO ---
     st.divider()
-    if st.button("⬅️ Voltar", use_container_width=True):
+    if st.button("⬅️ Voltar (Nova Validação)", use_container_width=True):
         st.session_state.validado = False
         st.session_state.uploader_key += 1
         st.rerun()
