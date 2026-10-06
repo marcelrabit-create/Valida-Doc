@@ -34,7 +34,7 @@ estilo_css = """
 st.markdown(estilo_css, unsafe_allow_html=True)
 
 st.title("📋 Validador de Documentos")
-st.write("Faça upload do documento para identificar o tipo e validar os CNPJs na Receita Federal.")
+st.write("Faça upload do documento para identificar o tipo e validar os CNPJs ou blocos de consolidação.")
 
 # --- VALIDAÇÃO MATEMÁTICA DE CNPJ (MÓDULO 11) ---
 
@@ -100,6 +100,51 @@ def identificar_tipo_documento(texto: str) -> str:
     
     else:
         return "Documento Genérico / Não Identificado"
+
+# --- VALIDAÇÕES ESPECÍFICAS PARA CONSOLIDAÇÃO DE PREÇOS ---
+
+def validar_consolidacao_precos(texto: str) -> list:
+    """Verifica regras de preenchimento dos Blocos III e IV para Consolidação de Preços."""
+    erros = []
+    texto_upper = texto.upper()
+
+    # Separação aproximada dos blocos para análise
+    bloco_iii_texto = ""
+    bloco_iv_texto = ""
+
+    if "BLOCO III" in texto_upper:
+        partes = texto_upper.split("BLOCO III")
+        resto = partes[1]
+        if "BLOCO IV" in resto:
+            bloco_iii_texto = resto.split("BLOCO IV")[0]
+            bloco_iv_texto = resto.split("BLOCO IV")[1]
+        else:
+            bloco_iii_texto = resto
+    elif "BLOCO IV" in texto_upper:
+        bloco_iv_texto = texto_upper.split("BLOCO IV")[1]
+
+    # Regra 1: Se o bloco IV 14 (itens de menor valor) estiver em branco
+    # Procuramos por menções ao item 14 ou o termo indicador de menor valor no bloco IV
+    bloco_iv_limpo = re.sub(r'\s+', ' ', bloco_iv_texto).strip()
+    
+    # Verificação simplificada de preenchimento do Bloco IV item 14
+    # Caso não haja conteúdo relevante ou a seção 14 esteja vazia
+    if not bloco_iv_limpo or ("14" in bloco_iv_limpo and len(bloco_iv_limpo.replace("14", "").strip()) < 5):
+        erros.append("Faltam itens de menor valor.")
+
+    # Regra 2 & 3: Comparação de itens entre Bloco III (item 05) e Bloco IV (itens de menor valor)
+    # Extração heurística de números de itens citados em cada bloco
+    itens_bloco_iii = set(re.findall(r'(?:ITEM\s*0?5|0?5[\.\-\º\ª\s])\s*([0-9A-Z\-\/\,\.]+)', bloco_iii_texto))
+    itens_bloco_iv = set(re.findall(r'(?:ITEM\s*1?4|1?4[\.\-\º\ª\s])\s*([0-9A-Z\-\/\,\.]+)', bloco_iv_texto))
+
+    # Se os blocos contiverem listas genéricas de números de itens, comparamos os conjuntos
+    # Caso a extração estrita encontre divergência ou conjuntos vazios com textos diferentes:
+    if bloco_iii_texto and bloco_iv_texto:
+        # Se houver itens explícitos diferentes detectados nas marcações dos blocos
+        if itens_bloco_iii and itens_bloco_iv and itens_bloco_iii != itens_bloco_iv:
+            erros.append("Divergência entre os itens do bloco III e bloco IV.")
+
+    return erros
 
 # --- EXTRAÇÃO DE TEXTO E CNPJ ---
 
@@ -184,7 +229,6 @@ def ler_arquivo(uploaded_file) -> str:
 
 @st.cache_data(ttl=3600)
 def consultar_receita_federal(cnpj: str) -> dict:
-    """Consulta a BrasilAPI e usa a ReceitaWS como contingência caso ocorra erro no servidor."""
     cnpj_limpo = re.sub(r'\D', '', str(cnpj))
     
     url_brasil_api = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_limpo}"
@@ -222,7 +266,6 @@ def formatar_cnpj(cnpj: str) -> str:
 
 # --- INTERFACE E FLUXO PRINCIPAL ---
 
-# Só exibe o componente de upload se ainda não foi validado
 if not st.session_state.validado:
     arquivo = st.file_uploader(
         "Anexe o documento (PDF, JPG, JPEG, PNG, TXT, XLS, XLSM)",
@@ -237,7 +280,6 @@ if not st.session_state.validado:
             st.session_state.validado = True
             st.rerun()
 
-# Se já foi validado, exibe os resultados na tela (sem mostrar o uploader)
 if st.session_state.validado:
     st.divider()
 
@@ -247,6 +289,20 @@ if st.session_state.validado:
     else:
         st.info(f"**{st.session_state.tipo_doc}**")
 
+    # SE FOR CONSOLIDAÇÃO DE PESQUISAS DE PREÇOS, EXIBE VALIDAÇÃO DE BLOCOS
+    if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
+        st.divider()
+        st.subheader("🔍 Validação dos Blocos (Consolidação de Preços)")
+        
+        erros_consolidacao = validar_consolidacao_precos(st.session_state.texto_processado)
+        
+        if erros_consolidacao:
+            for erro in erros_consolidacao:
+                st.error(f"❌ {erro}")
+        else:
+            st.success("✅ Nenhum erro encontrado nos blocos III e IV da consolidação.")
+
+    # VALIDAÇÃO DE CNPJS PARA DEMAIS DOCUMENTOS OU CASOS GERAIS
     if st.session_state.tipo_doc != "Documento Genérico / Não Identificado":
         st.divider()
         st.subheader("🔍 Validação na Receita Federal")
