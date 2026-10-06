@@ -27,7 +27,10 @@ estilo_css = """
 
 if st.session_state.validado:
     estilo_css += """
-    div[data-testid="stFileUploader"] {
+    [data-testid="stFileUploader"] {
+        display: none !important;
+    }
+    section[data-testid="stFileUploadDropzone"] {
         display: none !important;
     }
     """
