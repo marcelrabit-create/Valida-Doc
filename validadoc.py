@@ -8,10 +8,10 @@ from PIL import Image
 import pytesseract
 
 # Configuração da página do Streamlit
-st.set_page_config(page_title="Validador de CNPJ via Receita Federal", page_icon="🏢", layout="wide")
+st.set_page_config(page_title="Validador de Documentos", page_icon="🏢", layout="wide")
 
 st.title("🏢 Validador de CNPJ em Documentos")
-st.write("Faça upload de um arquivo para extrair os CNPJs e validar a situação cadastral na Receita Federal.")
+st.write("Faça upload de um arquivo para validar os campos.")
 
 # --- FUNÇÕES DE EXTRAÇÃO DE TEXTO ---
 
