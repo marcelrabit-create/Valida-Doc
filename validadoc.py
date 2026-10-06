@@ -57,18 +57,18 @@ def validar_digitos_cnpj(cnpj: str) -> bool:
 
     return cnpj[-2:] == digito1 + digito2
 
-# --- FUNÇÃO DE CLASSIFICAÇÃO DO DOCUMENTO (ROBUSTA) ---
+# --- FUNÇÃO DE CLASSIFICAÇÃO DO DOCUMENTO (FLEXÍVEL) ---
 
 def identificar_tipo_documento(texto: str) -> str:
     """Classifica o documento com base em palavras-chave abrangentes encontradas no texto."""
     texto_upper = texto.upper()
 
-    # Identificação flexível de Consolidação de Pesquisas de Preços (FNDE / PDDE / UEX / Blocos)
+    # Identificação flexível para qualquer layout de Consolidação de Pesquisas de Preços
     if (
         "CONSOLIDACAO" in texto_upper or "CONSOLIDAÇÃO" in texto_upper or 
         "PESQUISAS DE PRECOS" in texto_upper or "PESQUISAS DE PREÇOS" in texto_upper or 
         "BLOCO I" in texto_upper or "UEX" in texto_upper or 
-        ("FNDE" in texto_upper and "BLOCO" in texto_upper)
+        "PROGRAMA DINHEIRO DIRETO NA ESCOLA" in texto_upper or "PDDE" in texto_upper
     ):
         return "Consolidação de Pesquisas de Preços"
     
@@ -151,17 +151,10 @@ def formatar_cnpj(cnpj: str) -> str:
 # --- EXTRAÇÃO DO CNPJ DO BLOCO I (UNIDADE ESCOLAR) ---
 
 def extrair_cnpj_unidade_escolar(texto: str) -> str:
-    """Identifica com precisão o CNPJ da Unidade Escolar (item 02 do Bloco I)."""
-    # Procura especificamente por padrões contendo o item 02 ou CNPJ logo no início do texto
-    match_cnpj_bloco1 = re.search(r'(?:0?2\s*[-–]?\s*CNPJ|CNPJ)[:\s]*([0-9\.\-/]+)', texto[:1000], re.IGNORECASE)
-    if match_cnpj_bloco1:
-        c_limpo = re.sub(r'\D', '', match_cnpj_bloco1.group(1))
-        if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo):
-            return c_limpo
-
-    # Fallback buscando todos os CNPJs válidos no terço superior do documento
+    """Identifica com precisão o CNPJ da Unidade Escolar (item 02 do Bloco I) em documentos verticais ou horizontais."""
     padrao_cnpj = r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b'
-    cnpjs = re.findall(padrao_cnpj, texto[:1000])
+    cnpjs = re.findall(padrao_cnpj, texto[:1200]) # Varre a parte superior do documento
+    
     for c in cnpjs:
         c_limpo = re.sub(r'\D', '', c)
         if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo):
