@@ -152,9 +152,9 @@ if arquivo is not None:
     # 1. IDENTIFICAÇÃO DO TIPO DE DOCUMENTO
     st.subheader("📄 Tipo de Documento")
     if tipo_documento != "Documento Genérico / Não Identificado":
-        st.success(f"**Identificado como:** {tipo_documento}")
+        st.success(f"**{tipo_documento}**")
     else:
-        st.info(f"**Identificado como:** {tipo_documento}")
+        st.info(f"**{tipo_documento}**")
 
     st.divider()
 
