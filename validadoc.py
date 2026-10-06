@@ -221,7 +221,7 @@ def validar_consolidacao_precos(texto: str) -> list:
 
     return erros
 
-# --- EXTRAÇÃO DE TEXTO GERAL ---
+# --- EXTRAÇÃO DE TEXTO E CORREÇÃO DE ORIENTAÇÃO DE IMAGENS ---
 
 def corrigir_substituicoes_ocr(string_cand: str) -> str:
     mapeamento = {
@@ -262,13 +262,18 @@ def ler_arquivo(uploaded_file) -> str:
     try:
         if extensao in ['jpg', 'jpeg', 'png']:
             imagem = Image.open(uploaded_file)
-            texto_extraido += pytesseract.image_to_string(imagem, lang='por') + "\n"
             
-            img_cinza = imagem.convert('L')
-            enhancer = ImageEnhance.Contrast(img_cinza)
-            img_contraste = enhancer.enhance(2.5)
-            texto_extraido += pytesseract.image_to_string(img_contraste, lang='por') + "\n"
-            texto_extraido += pytesseract.image_to_string(img_contraste, lang='por', config='--psm 6') + "\n"
+            # Executa o OCR testando os ângulos comuns (0º, 90º, 270º) para suportar fotos tiradas deitadas ou viradas
+            for angulo in [0, 90, 270]:
+                img_rotacionada = imagem.rotate(angulo, expand=True) if angulo != 0 else imagem
+                
+                texto_extraido += pytesseract.image_to_string(img_rotacionada, lang='por') + "\n"
+                
+                img_cinza = img_rotacionada.convert('L')
+                enhancer = ImageEnhance.Contrast(img_cinza)
+                img_contraste = enhancer.enhance(2.5)
+                texto_extraido += pytesseract.image_to_string(img_contraste, lang='por') + "\n"
+                texto_extraido += pytesseract.image_to_string(img_contraste, lang='por', config='--psm 6') + "\n"
 
         elif extensao == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
@@ -407,7 +412,7 @@ if st.session_state.validado:
             st.success("✅ Nenhum erro encontrado nos blocos III e IV da consolidação.")
 
     st.divider()
-    if st.button("⬅️ Voltar (Nova Validação)", use_container_width=True):
+    if st.button("⬅️️ Voltar (Nova Validação)", use_container_width=True):
         st.session_state.validado = False
         st.session_state.texto_processado = ""
         st.session_state.tipo_doc = ""
