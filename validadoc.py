@@ -16,6 +16,12 @@ if "uploader_key" not in st.session_state:
 if "validado" not in st.session_state:
     st.session_state.validado = False
 
+if "texto_processado" not in st.session_state:
+    st.session_state.texto_processado = ""
+
+if "tipo_doc" not in st.session_state:
+    st.session_state.tipo_doc = ""
+
 # --- OCULTAR ELEMENTOS PADRÃO DO STREAMLIT ---
 estilo_css = """
     <style>
@@ -23,19 +29,8 @@ estilo_css = """
     header {visibility: hidden;}
     footer {visibility: hidden;}
     .stAppHeader {display: none;}
+    </style>
 """
-
-if st.session_state.validado:
-    estilo_css += """
-    [data-testid="stFileUploader"] {
-        display: none !important;
-    }
-    section[data-testid="stFileUploadDropzone"] {
-        display: none !important;
-    }
-    """
-
-estilo_css += " </style>"
 st.markdown(estilo_css, unsafe_allow_html=True)
 
 st.title("📋 Validador de Documentos")
@@ -192,7 +187,6 @@ def consultar_receita_federal(cnpj: str) -> dict:
     """Consulta a BrasilAPI e usa a ReceitaWS como contingência caso ocorra erro no servidor."""
     cnpj_limpo = re.sub(r'\D', '', str(cnpj))
     
-    # 1. Tentativa Principal: BrasilAPI
     url_brasil_api = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_limpo}"
     try:
         response = requests.get(url_brasil_api, timeout=8)
@@ -203,7 +197,6 @@ def consultar_receita_federal(cnpj: str) -> dict:
     except requests.RequestException:
         pass
 
-    # 2. Contingência: ReceitaWS (caso a BrasilAPI retorne 500 ou falhe a ligação)
     url_receitaws = f"https://receitaws.com.br/v1/cnpj/{cnpj_limpo}"
     try:
         response_alt = requests.get(url_receitaws, timeout=8)
@@ -229,9 +222,7 @@ def formatar_cnpj(cnpj: str) -> str:
 
 # --- INTERFACE E FLUXO PRINCIPAL ---
 
-arquivo = None
-
-# Só mostra o uploader se ainda não foi validado
+# Só exibe o componente de upload se ainda não foi validado
 if not st.session_state.validado:
     arquivo = st.file_uploader(
         "Anexe o documento (PDF, JPG, JPEG, PNG, TXT, XLS, XLSM)",
@@ -239,24 +230,28 @@ if not st.session_state.validado:
         key=f"uploader_{st.session_state.uploader_key}"
     )
 
-if arquivo is not None:
-    with st.spinner("Lendo e processando o documento..."):
-        conteudo_texto = ler_arquivo(arquivo)
-        cnpjs_encontrados = extrair_cnpjs_de_texto(conteudo_texto)
-        tipo_documento = identificar_tipo_documento(conteudo_texto)
+    if arquivo is not None:
+        with st.spinner("Lendo e processando o documento..."):
+            st.session_state.texto_processado = ler_arquivo(arquivo)
+            st.session_state.tipo_doc = identificar_tipo_documento(st.session_state.texto_processado)
+            st.session_state.validado = True
+            st.rerun()
 
+# Se já foi validado, exibe os resultados na tela (sem mostrar o uploader)
+if st.session_state.validado:
     st.divider()
 
     st.subheader("📄 Tipo de Documento")
-    if tipo_documento != "Documento Genérico / Não Identificado":
-        st.success(f"**{tipo_documento}**")
+    if st.session_state.tipo_doc != "Documento Genérico / Não Identificado":
+        st.success(f"**{st.session_state.tipo_doc}**")
     else:
-        st.info(f"**{tipo_documento}**")
+        st.info(f"**{st.session_state.tipo_doc}**")
 
-    if tipo_documento != "Documento Genérico / Não Identificado":
+    if st.session_state.tipo_doc != "Documento Genérico / Não Identificado":
         st.divider()
         st.subheader("🔍 Validação na Receita Federal")
 
+        cnpjs_encontrados = extrair_cnpjs_de_texto(st.session_state.texto_processado)
         cnpjs_para_exibir = [c for c in cnpjs_encontrados if re.sub(r'\D', '', c) != "06697670000195"]
 
         if not cnpjs_para_exibir:
@@ -294,10 +289,10 @@ if arquivo is not None:
                             st.write(f"**Cidade/UF:** {municipio} - {uf}")
                             st.write(f"**Atividade Principal:** {dados.get('cnae_fiscal_descricao', 'N/A')}")
 
-    st.session_state.validado = True
-
     st.divider()
     if st.button("⬅️ Voltar (Nova Validação)", use_container_width=True):
         st.session_state.validado = False
+        st.session_state.texto_processado = ""
+        st.session_state.tipo_doc = ""
         st.session_state.uploader_key += 1
         st.rerun()
