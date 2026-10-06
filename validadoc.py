@@ -331,17 +331,20 @@ if st.session_state.validado:
         st.write(f"**Razão Social:** {razao_social_uex}")
         st.write(f"**CNPJ:** {cnpj_formatado_uex}")
 
-    # 2º: VALIDAÇÃO NA RECEITA FEDERAL (DOS FORNECEDORES/PROPONENTES DO BLOCO II)
+    # 2º: VALIDAÇÃO NA RECEITA FEDERAL (DOS FORNECEDORES/PROPONENTES)
     if st.session_state.tipo_doc != "Documento Genérico / Não Identificado":
         st.divider()
         st.subheader("🔍 Validação na Receita Federal")
 
         cnpjs_encontrados = extrair_cnpjs_de_texto(st.session_state.texto_processado)
         
-        # Exclui o CNPJ da Unidade Escolar da lista de proponentes
+        # Normaliza o CNPJ da UEX para garantir a exclusão correta da lista de fornecedores
+        cnpj_uex_limpo = re.sub(r'\D', '', str(cnpj_uex)) if 'cnpj_uex' in locals() and cnpj_uex else ""
+
+        # Exclui o CNPJ da Unidade Escolar e o CNPJ padrão do conselho da lista de proponentes
         cnpjs_para_exibir = [
             c for c in cnpjs_encontrados 
-            if re.sub(r'\D', '', c) != "06697670000195" and (not cnpj_uex or re.sub(r'\D', '', c) != cnpj_uex)
+            if re.sub(r'\D', '', c) != "06697670000195" and (not cnpj_uex_limpo or re.sub(r'\D', '', c) != cnpj_uex_limpo)
         ]
 
         if not cnpjs_para_exibir:
