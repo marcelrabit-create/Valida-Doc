@@ -101,42 +101,51 @@ def identificar_tipo_documento(texto: str) -> str:
     else:
         return "Documento Genérico / Não Identificado"
 
-# --- EXTRAÇÃO DO ITEM 01 E ITEM 02 DO BLOCO I ---
+# --- EXTRAÇÃO ROBUSTA DO ITEM 01 E ITEM 02 DO BLOCO I ---
 
 def extrair_bloco_i_unidade(texto: str) -> dict:
-    """Isola o Bloco I e extrai estritamente o item 01 (Razão Social) e o item 02 (CNPJ)."""
-    # Remove quebras de linha excessivas e limpa o texto mantendo a estrutura
-    texto_limpo = re.sub(r'\s+', ' ', texto)
-    
+    """Extrai com precisão a Razão Social (Item 01) e o CNPJ (Item 02) do Bloco I."""
     razao_social = "Não identificada"
     cnpj_encontrado = "Não encontrado"
 
-    # Captura o texto exato entre o marcador '01' / '01 - Razão Social' e o '02 - CNPJ'
-    match_bloco = re.search(r'01\s*[-–]?\s*Razão Social\s*(.*?)\s*02\s*[-–]?\s*CNPJ', texto, re.IGNORECASE)
-    if match_bloco:
-        razao_social = match_bloco.group(1).replace('\n', ' ').strip()
-    else:
-        # Fallback genérico para capturar logo após o Bloco I
-        match_rs = re.search(r'BLOCO\s*I\s*[-–]?\s*IDENTIFICAÇÃO.*?(?:01|1)\s*[-–]?.*?(?:Razão Social)?[:\s]*([A-ZÇÃÕÉÊÁÓÚ\s]+)', texto, re.IGNORECASE)
-        if match_rs:
-            razao_social = match_rs.group(1).replace('\n', ' ').strip()
+    # Divide o texto em linhas para análise sequencial do topo (Bloco I)
+    linhas = [linha.strip() for linha in texto.split('\n') if linha.strip()]
+    
+    for i, linha in enumerate(linhas):
+        linha_upper = linha.upper()
+        
+        # Procura pela linha do Conselho de Escola ou Item 01
+        if "CONSELHO DE ESCOLA" in linha_upper or "UEX" in linha_upper:
+            razao_social = linha
+            break
+        elif "01" in linha_upper and ("RAZÃO" in linha_upper or "SOCIAL" in linha_upper):
+            # Se a linha contiver o rótulo, pega o texto dela ou da linha seguinte
+            if len(linha) > 5 and not linha_upper.endswith("01"):
+                razao_social = re.sub(r'^01[\s\-–]*', '', linha).strip()
+            elif i + 1 < len(linhas):
+                razao_social = linhas[i + 1]
+            break
 
-    # Captura o CNPJ logo após o item '02' do Bloco I
-    match_cnpj = re.search(r'02\s*[-–]?\s*CNPJ\s*[:\s]*([0-9\.\-/]+)', texto, re.IGNORECASE)
-    if match_cnpj:
-        c_limpo = re.sub(r'\D', '', match_cnpj.group(1))
-        if len(c_limpo) == 14:
-            cnpj_encontrado = f"{c_limpo[:2]}.{c_limpo[2:5]}.{c_limpo[5:8]}/{c_limpo[8:12]}-{c_limpo[12:]}"
-        else:
-            cnpj_encontrado = match_cnpj.group(1).strip()
-    else:
-        # Varredura de fallback para encontrar o CNPJ da UEX no início do texto
-        padrao_cnpj = r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b'
-        cnpjs = re.findall(padrao_cnpj, texto[:500]) # Primeiros caracteres costumam conter o Bloco I
-        if cnpjs:
-            c_limpo = re.sub(r'\D', '', cnpjs[0])
+    # Se ainda não achou, procura por qualquer linha contendo "CONSELHO DE ESCOLA" em todo o texto
+    if razao_social == "Não identificada":
+        for linha in linhas:
+            if "CONSELHO DE ESCOLA" in linha.upper():
+                razao_social = linha
+                break
+
+    # Extração do CNPJ do Bloco I (Item 02)
+    padrao_cnpj = r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b'
+    cnpjs = re.findall(padrao_cnpj, texto[:800]) # Foca no topo do documento (Bloco I)
+    
+    if cnpjs:
+        # Se houver múltiplos CNPJs no topo, o segundo ou o que vem logo após a UEX costuma ser o da escola, 
+        # mas validamos o formato de 14 dígitos
+        for c in cnpjs:
+            c_limpo = re.sub(r'\D', '', c)
             if len(c_limpo) == 14:
+                # Evita pegar CNPJs de proponentes se o primeiro for o da escola
                 cnpj_encontrado = f"{c_limpo[:2]}.{c_limpo[2:5]}.{c_limpo[5:8]}/{c_limpo[8:12]}-{c_limpo[12:]}"
+                break
 
     return {
         "razao_social": razao_social,
