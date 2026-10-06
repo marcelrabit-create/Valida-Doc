@@ -21,6 +21,24 @@ ocultar_elementos_streamlit = """
 """
 st.markdown(ocultar_elementos_streamlit, unsafe_allow_html=True)
 
+# Inicialização do estado da sessão
+if "sessao_encerrada" not in st.session_state:
+    st.session_state.sessao_encerrada = False
+
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
+
+# --- TELA DE SESSÃO ENCERRADA ---
+if st.session_state.sessao_encerrada:
+    st.title("📋 Validador de Documentos")
+    st.info("👋 Sessão encerrada com sucesso. Obrigado por utilizar o validador!")
+    
+    if st.button("Nova Consulta / Iniciar Novamente", type="primary"):
+        st.session_state.sessao_encerrada = False
+        st.session_state.uploader_key += 1
+        st.rerun()
+    st.stop()
+
 st.title("📋 Validador de Documentos")
 st.write("Faça upload do documento para extrair e consultar os CNPJs na Receita Federal.")
 
@@ -100,7 +118,8 @@ def formatar_cnpj(cnpj: str) -> str:
 
 arquivo = st.file_uploader(
     "Anexe o documento (PDF, JPG, JPEG, PNG, TXT, XLS, XLSM)",
-    type=["pdf", "jpg", "jpeg", "png", "txt", "xls", "xlsm", "xlsx"]
+    type=["pdf", "jpg", "jpeg", "png", "txt", "xls", "xlsm", "xlsx"],
+    key=f"uploader_{st.session_state.uploader_key}"
 )
 
 if arquivo is not None:
@@ -153,3 +172,17 @@ if arquivo is not None:
                     with col2:
                         st.write(f"**Cidade/UF:** {municipio} - {uf}")
                         st.write(f"**Atividade Principal:** {dados.get('cnae_fiscal_descricao', 'N/A')}")
+
+    # --- BOTÕES DE NAVEGAÇÃO E ENCERRAMENTO ---
+    st.divider()
+    btn_col1, btn_col2 = st.columns(2)
+    
+    with btn_col1:
+        if st.button("⬅️ Voltar (Nova Validação)", use_container_width=True):
+            st.session_state.uploader_key += 1
+            st.rerun()
+
+    with btn_col2:
+        if st.button("🔴 Sair", use_container_width=True):
+            st.session_state.sessao_encerrada = True
+            st.rerun()
