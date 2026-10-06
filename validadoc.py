@@ -101,6 +101,21 @@ def identificar_tipo_documento(texto: str) -> str:
     else:
         return "Documento Genérico / Não Identificado"
 
+# --- EXTRAÇÃO DO BLOCO I (IDENTIFICAÇÃO DA UNIDADE) ---
+
+def extrair_bloco_i(texto: str) -> str:
+    """Extrai as informações correspondentes ao Bloco I - Identificação."""
+    texto_upper = texto.upper()
+    if "BLOCO I" in texto_upper:
+        partes = texto_upper.split("BLOCO I")
+        resto = partes[1]
+        # Tenta cortar até o próximo bloco para isolar o Bloco I
+        for prox in ["BLOCO II", "BLOCO III", "BLOCO IV"]:
+            if prox in resto:
+                resto = resto.split(prox)[0]
+        return resto.strip()
+    return "Informações do Bloco I não encontradas explicitamente."
+
 # --- VALIDAÇÕES ESPECÍFICAS PARA CONSOLIDAÇÃO DE PREÇOS ---
 
 def validar_consolidacao_precos(texto: str) -> list:
@@ -279,7 +294,14 @@ if st.session_state.validado:
     else:
         st.info(f"**{st.session_state.tipo_doc}**")
 
-    # 1º: VALIDAÇÃO NA RECEITA FEDERAL
+    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (BLOCO I) - SE FOR CONSOLIDAÇÃO DE PREÇOS
+    if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
+        st.divider()
+        st.subheader("🏫 Identificação da Unidade Escolar (Bloco I)")
+        bloco_i_info = extrair_bloco_i(st.session_state.texto_processado)
+        st.info(bloco_i_info)
+
+    # 2º: VALIDAÇÃO NA RECEITA FEDERAL
     if st.session_state.tipo_doc != "Documento Genérico / Não Identificado":
         st.divider()
         st.subheader("🔍 Validação na Receita Federal")
@@ -288,7 +310,7 @@ if st.session_state.validado:
         cnpjs_para_exibir = [c for c in cnpjs_encontrados if re.sub(r'\D', '', c) != "06697670000195"]
 
         if not cnpjs_para_exibir:
-            st.warning("⚠️ Nenhum CNPJ de fornecedor/emitente válido foi encontrado no arquivo anexado.")
+            st.warning("⚠️️ Nenhum CNPJ de fornecedor/emitente válido foi encontrado no arquivo anexado.")
         else:
             for cnpj in cnpjs_para_exibir:
                 dados = consultar_receita_federal(cnpj)
@@ -322,7 +344,7 @@ if st.session_state.validado:
                             st.write(f"**Cidade/UF:** {municipio} - {uf}")
                             st.write(f"**Atividade Principal:** {dados.get('cnae_fiscal_descricao', 'N/A')}")
 
-    # 2º: VALIDAÇÃO DOS BLOCOS (SE FOR CONSOLIDAÇÃO DE PREÇOS)
+    # 3º: VALIDAÇÃO DOS BLOCOS (SE FOR CONSOLIDAÇÃO DE PREÇOS)
     if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
         st.divider()
         st.subheader("🔍 Validação dos Blocos (Consolidação de Preços)")
