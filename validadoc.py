@@ -50,75 +50,30 @@ def identificar_tipo_documento(texto: str) -> str:
     if "CONSOLIDACAO DE PESQUISAS DE PRECOS" in texto_upper or "CONSOLIDAÇÃO DE PESQUISAS DE PREÇOS" in texto_upper or "BLOCO I - IDENTIFICAÇÃO" in texto_upper:
         return "Consolidação de Pesquisas de Preços"
     
-    # 2. Nota Fiscal de Serviços (NFS-e / Municipal)
-    elif (
-        "NOTA FISCAL DE SERVICOS" in texto_upper or 
-        "NOTA FISCAL DE SERVIÇOS" in texto_upper or 
-        "NOTA FISCAL ELETRÔNICA DE SERVIÇO" in texto_upper or 
-        "NOTA FISCAL ELETRONICA DE SERVICO" in texto_upper or 
-        "NFS-E" in texto_upper or 
-        "NFSE" in texto_upper or 
-        "PRESTADOR DE SERVIÇOS" in texto_upper or 
-        "PRESTADOR DE SERVICOS" in texto_upper or 
-        "TOMADOR DE SERVIÇOS" in texto_upper or 
-        "TOMADOR DE SERVICOS" in texto_upper or 
-        "DISCRIMINAÇÃO DOS SERVIÇOS" in texto_upper or 
-        "DISCRIMINACAO DOS SERVICOS" in texto_upper or 
-        "VALOR DOS SERVIÇOS" in texto_upper or 
-        "VALOR DOS SERVICOS" in texto_upper or 
-        "SECRETARIA DE FINANÇAS" in texto_upper or 
-        "SECRETARIA DE FINANCAS" in texto_upper or 
-        "ISSQN" in texto_upper
-    ):
+    # 2. Nota Fiscal de Serviços (NFS-e)
+    elif "NOTA FISCAL DE SERVICOS" in texto_upper or "NOTA FISCAL DE SERVIÇOS" in texto_upper or "NFS-E" in texto_upper or "NFSE" in texto_upper or "PRESTACAO DE SERVICOS" in texto_upper or "PRESTAÇÃO DE SERVIÇOS" in texto_upper:
         return "Nota Fiscal de Serviços"
     
     # 3. Nota Fiscal de Compra de Materiais (DANFE / NF-e / Venda de Mercadoria)
-    elif (
-        "DANFE" in texto_upper or 
-        "DOCUMENTO AUXILIAR DA NOTA FISCAL" in texto_upper or 
-        "VENDA DE MERCADORIA" in texto_upper or 
-        "NFE" in texto_upper or 
-        "NF-E" in texto_upper or 
-        "CHAVE DE ACESSO" in texto_upper or 
-        "DADOS DOS PRODUTOS" in texto_upper
-    ):
+    elif "DANFE" in texto_upper or "DOCUMENTO AUXILIAR DA NOTA FISCAL" in texto_upper or "VENDA DE MERCADORIA" in texto_upper or "NFE" in texto_upper or "NF-E" in texto_upper or "CHAVE DE ACESSO" in texto_upper or "DADOS DOS PRODUTOS" in texto_upper:
         return "Nota Fiscal de Compra de Materiais"
     
     else:
         return "Documento Genérico / Não Identificado"
 
-# --- FUNÇÕES DE EXTRAÇÃO DE TEXTO E CNPJ ---
+# --- FUNÇÕES DE EXTRAÇÃO DE TEXTO ---
 
 def extrair_cnpjs_de_texto(texto: str) -> list:
-    """Busca padrões de CNPJ (com tratamento para erros comuns de OCR e máscaras)."""
+    """Busca padrões de CNPJ (com ou sem formatação) no texto."""
+    padrao = r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b'
+    encontrados = re.findall(padrao, texto)
+    
     cnpjs_limpos = set()
-
-    # 1. Busca por CNPJ com formatação padrão (ex: 00.000.000/0000-00)
-    padrao_formatado = r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}'
-    encontrados_formatados = re.findall(padrao_formatado, texto)
-    for item in encontrados_formatados:
-        numeros = re.sub(r'\D', '', item)
+    for c in encontrados:
+        numeros = re.sub(r'\D', '', c)
         if len(numeros) == 14:
             cnpjs_limpos.add(numeros)
-
-    # 2. Tratamento do texto para erros comuns de OCR (converte O/o para 0 e I/l para 1)
-    texto_trabalhado = texto.replace('O', '0').replace('o', '0').replace('I', '1').replace('l', '1')
-
-    # Busca por padrões genéricos mantendo pontuações/espaços próximos
-    padrao_generico = r'\b\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[/\s]?\d{4}[-\s]?\d{2}\b'
-    encontrados_genericos = re.findall(padrao_generico, texto_trabalhado)
-    for item in encontrados_genericos:
-        numeros = re.sub(r'\D', '', item)
-        if len(numeros) == 14:
-            cnpjs_limpos.add(numeros)
-
-    # 3. Fallback: Varre sequências de dígitos de 14 a 18 números no texto limpo
-    todas_sequencias = re.findall(r'\d{14,18}', re.sub(r'\D', ' ', texto_trabalhado))
-    for seq in todas_sequencias:
-        cand = seq[:14]
-        if len(cand) == 14:
-            cnpjs_limpos.add(cand)
-
+            
     return list(cnpjs_limpos)
 
 def ler_arquivo(uploaded_file) -> str:
@@ -250,7 +205,7 @@ if arquivo is not None:
 
     # --- BOTÃO DE NAVEGAÇÃO ---
     st.divider()
-    if st.button("⬅️ Voltar (Nova Validação)", use_container_width=True):
+    if st.button("⬅️ Voltar", use_container_width=True):
         st.session_state.validado = False
         st.session_state.uploader_key += 1
         st.rerun()
