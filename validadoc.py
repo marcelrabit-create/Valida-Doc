@@ -101,50 +101,50 @@ def identificar_tipo_documento(texto: str) -> str:
     else:
         return "Documento Genérico / Não Identificado"
 
-# --- EXTRAÇÃO DA RAZÃO SOCIAL E CNPJ DO BLOCO I ---
+# --- EXTRAÇÃO DO ITEM 01 E ITEM 02 DO BLOCO I ---
 
 def extrair_bloco_i_unidade(texto: str) -> dict:
-    """Isola o Bloco I e extrai estritamente a Razão Social e o CNPJ da unidade escolar."""
+    """Isola o Bloco I e extrai o item 01 (Razão Social) e o item 02 (CNPJ)."""
     texto_upper = texto.upper()
     bloco_i_texto = ""
 
     if "BLOCO I" in texto_upper:
         partes = texto_upper.split("BLOCO I")
         resto = partes[1]
-        for prox in ["BLOCO II", "BLOCO III", "BLOCO IV"]:
+        for prox in ["BLOCO II", "BLOCO III", "BLOCO IV", "BLOCO V"]:
             if prox in resto:
                 resto = resto.split(prox)[0]
         bloco_i_texto = resto
 
     razao_social = "Não identificada"
-    padroes_rs = [
-        r'UNIDADE\s*ESCOLAR[:\s]*([^\n]+)', 
-        r'RAZÃO\s*SOCIAL[:\s]*([^\n]+)', 
-        r'ESCOLA[:\s]*([^\n]+)',
-        r'UNIDADE[:\s]*([^\n]+)'
-    ]
-    for padrao in padroes_rs:
-        match = re.search(padrao, bloco_i_texto)
-        if match:
-            razao_social = match.group(1).strip()
-            break
-    
-    if razao_social == "Não identificada" and bloco_i_texto:
-        linhas = [l.strip() for l in bloco_i_texto.split('\n') if len(l.strip()) > 5]
-        if linhas:
-            razao_social = linhas[0]
-
-    padrao_cnpj = r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b'
-    cnpjs_bloco_i = re.findall(padrao_cnpj, bloco_i_texto)
-    
-    # Formata o CNPJ se encontrado
     cnpj_encontrado = "Não encontrado"
-    if cnpjs_bloco_i:
-        c_limpo = re.sub(r'\D', '', cnpjs_bloco_i[0])
+
+    # Extração do Item 01 (Razão Social da Unidade Escolar)
+    match_rs = re.search(r'(?:0?1\s*[-–]?\s*RAZÃO\s*SOCIAL|0?1)[:\s]*([^\n]+)', bloco_i_texto)
+    if match_rs:
+        razao_social = match_rs.group(1).strip()
+    else:
+        for padrao in [r'RAZÃO\s*SOCIAL[:\s]*([^\n]+)', r'ESCOLA[:\s]*([^\n]+)']:
+            m = re.search(padrao, bloco_i_texto)
+            if m:
+                razao_social = m.group(1).strip()
+                break
+
+    # Extração do Item 02 (CNPJ da Unidade Escolar)
+    match_cnpj = re.search(r'(?:0?2\s*[-–]?\s*CNPJ|0?2)[:\s]*([0-9\.\-/]+)', bloco_i_texto)
+    if match_cnpj:
+        c_limpo = re.sub(r'\D', '', match_cnpj.group(1))
         if len(c_limpo) == 14:
             cnpj_encontrado = f"{c_limpo[:2]}.{c_limpo[2:5]}.{c_limpo[5:8]}/{c_limpo[8:12]}-{c_limpo[12:]}"
         else:
-            cnpj_encontrado = cnpjs_bloco_i[0]
+            cnpj_encontrado = match_cnpj.group(1).strip()
+    else:
+        padrao_cnpj = r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b'
+        cnpjs_bloco_i = re.findall(padrao_cnpj, bloco_i_texto)
+        if cnpjs_bloco_i:
+            c_limpo = re.sub(r'\D', '', cnpjs_bloco_i[0])
+            if len(c_limpo) == 14:
+                cnpj_encontrado = f"{c_limpo[:2]}.{c_limpo[2:5]}.{c_limpo[5:8]}/{c_limpo[8:12]}-{c_limpo[12:]}"
 
     return {
         "razao_social": razao_social,
@@ -329,10 +329,10 @@ if st.session_state.validado:
     else:
         st.info(f"**{st.session_state.tipo_doc}**")
 
-    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (BLOCO I - RAZÃO SOCIAL E CNPJ)
+    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (ITEM 01 E ITEM 02)
     if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
         st.divider()
-        st.subheader("🏫 Unidade Escolar (Bloco I)")
+        st.subheader("🏫 Unidade Escolar")
         info_bloco_i = extrair_bloco_i_unidade(st.session_state.texto_processado)
         
         st.write(f"**Razão Social:** {info_bloco_i['razao_social']}")
@@ -395,7 +395,7 @@ if st.session_state.validado:
             st.success("✅ Nenhum erro encontrado nos blocos III e IV da consolidação.")
 
     st.divider()
-    if st.button("⬅️️ Voltar (Nova Validação)", use_container_width=True):
+    if st.button("⬅️ Voltar (Nova Validação)", use_container_width=True):
         st.session_state.validado = False
         st.session_state.texto_processado = ""
         st.session_state.tipo_doc = ""
