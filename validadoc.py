@@ -4,7 +4,7 @@ import requests
 import json
 import pandas as pd
 import pdfplumber
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageOps
 import pytesseract
 
 # Configuração da página
@@ -122,13 +122,17 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
     return list(cnpjs_limpos)
 
 def pre_processar_imagem(img: Image.Image) -> Image.Image:
-    """Aplica escala de cinza e contraste para reforçar textos finos em NFS-e."""
+    """Aplica escala de cinza, alto contraste e binarização para reforçar textos em tabelas."""
     img = img.convert('L')
     enhancer = ImageEnhance.Contrast(img)
-    return enhancer.enhance(2.5)
+    img = enhancer.enhance(3.0)
+    # Binarização (Limiarização)
+    threshold = 180
+    img = img.point(lambda p: 255 if p > threshold else 0)
+    return img
 
 def ler_arquivo(uploaded_file) -> str:
-    """Lê o arquivo anexado utilizando OCR normal e OCR otimizado para tabelas."""
+    """Lê o arquivo anexado utilizando OCR normal e OCR binarizado de alta definição."""
     extensao = uploaded_file.name.split('.')[-1].lower()
     texto_extraido = ""
 
@@ -140,12 +144,12 @@ def ler_arquivo(uploaded_file) -> str:
             texto_extraido += pytesseract.image_to_string(imagem, lang='por') + "\n"
             
             # Passada 2: Otimizada para tabelas e blocos de texto (PSM 6)
-            config_tabela = '--psm 6'
-            texto_extraido += pytesseract.image_to_string(imagem, lang='por', config=config_tabela) + "\n"
+            texto_extraido += pytesseract.image_to_string(imagem, lang='por', config='--psm 6') + "\n"
             
-            # Passada 3: Imagem tratada com contraste
+            # Passada 3: Imagem binarizada (remove sombras de tabelas de NFS-e)
             imagem_tratada = pre_processar_imagem(imagem)
-            texto_extraido += pytesseract.image_to_string(imagem_tratada, lang='por', config=config_tabela) + "\n"
+            texto_extraido += pytesseract.image_to_string(imagem_tratada, lang='por', config='--psm 6') + "\n"
+            texto_extraido += pytesseract.image_to_string(imagem_tratada, lang='por', config='--psm 11') + "\n"
 
         elif extensao == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
@@ -226,7 +230,6 @@ if arquivo is not None:
     if not cnpjs_encontrados:
         st.warning("⚠️ Nenhum CNPJ válido foi encontrado no arquivo anexado.")
     else:
-        cnpjs_exibidos = 0
         for cnpj in cnpjs_encontrados:
             dados = consultar_receita_federal(cnpj)
 
@@ -234,7 +237,6 @@ if arquivo is not None:
                 cnpj_formatado = formatar_cnpj(cnpj)
                 with st.expander(f"CNPJ: {cnpj_formatado}", expanded=True):
                     st.error(f"❌ **CNPJ {cnpj_formatado}:** {dados['erro']}")
-                cnpjs_exibidos += 1
             else:
                 razao_social_oficial = dados.get("razao_social", "N/A")
 
@@ -242,7 +244,6 @@ if arquivo is not None:
                 if "CONSELHO DE ESCOLA" in razao_social_oficial.upper():
                     continue
 
-                cnpjs_exibidos += 1
                 cnpj_formatado = formatar_cnpj(cnpj)
                 situacao = dados.get("descricao_situacao_cadastral", "DESCONHECIDA")
                 nome_fantasia = dados.get("nome_fantasia") or "Não informado"
@@ -263,9 +264,6 @@ if arquivo is not None:
                         st.write(f"**Cidade/UF:** {municipio} - {uf}")
                         st.write(f"**Atividade Principal:** {dados.get('cnae_fiscal_descricao', 'N/A')}")
 
-        if cnpjs_exibidos == 0:
-            st.info("ℹ️ Os CNPJs identificados pertencem a Conselhos de Escola e foram omitidos conforme a regra de exibição.")
-
     # Marca a validação como concluída ao FINAL do processamento
     if not st.session_state.validado:
         st.session_state.validado = True
@@ -273,7 +271,7 @@ if arquivo is not None:
 
     # --- BOTÃO DE NAVEGAÇÃO ---
     st.divider()
-    if st.button("⬅️ Voltar (Nova Validação)", use_container_width=True):
+    if st.button("⬅️️ Voltar (Nova Validação)", use_container_width=True):
         st.session_state.validado = False
         st.session_state.uploader_key += 1
         st.rerun()
