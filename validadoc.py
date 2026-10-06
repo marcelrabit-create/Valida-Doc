@@ -5,6 +5,7 @@ import pandas as pd
 import pdfplumber
 from PIL import Image, ImageEnhance
 import pytesseract
+import time
 
 # Configuração da página
 st.set_page_config(page_title="Validador de Documentos", page_icon="📋", layout="wide")
@@ -106,40 +107,52 @@ def identificar_tipo_documento(texto: str) -> str:
     else:
         return "Documento Genérico / Não Identificado"
 
-# --- CONSULTA À RECEITA FEDERAL COM API DE CONTINGÊNCIA ---
+# --- CONSULTA À RECEITA FEDERAL COM MÚLTIPLAS APIS DE CONTINGÊNCIA ---
 
 @st.cache_data(ttl=3600)
 def consultar_receita_federal(cnpj: str) -> dict:
+    """Consulta múltiplas APIs públicas de CNPJ em cascata para evitar falhas de instabilidade."""
     cnpj_limpo = re.sub(r'\D', '', str(cnpj))
     
-    url_brasil_api = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_limpo}"
-    try:
-        response = requests.get(url_brasil_api, timeout=8)
-        if response.status_code == 200:
-            return response.json()
-        elif response.status_code == 404:
-            return {"erro": "CNPJ não encontrado na base da Receita Federal."}
-    except requests.RequestException:
-        pass
+    endpoints = [
+        f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_limpo}",
+        f"https://minhareceita.org/{cnpj_limpo}",
+        f"https://receitaws.com.br/v1/cnpj/{cnpj_limpo}"
+    ]
 
-    url_receitaws = f"https://receitaws.com.br/v1/cnpj/{cnpj_limpo}"
-    try:
-        response_alt = requests.get(url_receitaws, timeout=8)
-        if response_alt.status_code == 200:
-            dados_alt = response_alt.json()
-            if dados_alt.get("status") != "ERROR":
-                return {
-                    "razao_social": dados_alt.get("nome", "N/A"),
-                    "nome_fantasia": dados_alt.get("fantasia", "Não informado"),
-                    "descricao_situacao_cadastral": dados_alt.get("situacao", "DESCONHECIDA"),
-                    "uf": dados_alt.get("uf", ""),
-                    "municipio": dados_alt.get("municipio", ""),
-                    "cnae_fiscal_descricao": dados_alt.get("atividade_principal", [{}])[0].get("text", "N/A")
-                }
-    except requests.RequestException:
-        pass
+    for tentativa in range(2):
+        for url in endpoints:
+            try:
+                response = requests.get(url, timeout=7)
+                if response.status_code == 200:
+                    dados = response.json()
+                    
+                    if "minhareceita.org" in url or "brasilapi" in url:
+                        return {
+                            "razao_social": dados.get("razao_social") or dados.get("nome", "N/A"),
+                            "nome_fantasia": dados.get("nome_fantasia") or dados.get("fantasia", "Não informado"),
+                            "descricao_situacao_cadastral": dados.get("descricao_situacao_cadastral") or dados.get("situacao", "DESCONHECIDA"),
+                            "uf": dados.get("uf", ""),
+                            "municipio": dados.get("municipio", ""),
+                            "cnae_fiscal_descricao": dados.get("cnae_fiscal_descricao") or (dados.get("atividade_principal", [{}]) or [{}])[0].get("text", "N/A")
+                        }
+                    elif dados.get("status") != "ERROR":
+                        return {
+                            "razao_social": dados.get("nome", "N/A"),
+                            "nome_fantasia": dados.get("fantasia", "Não informado"),
+                            "descricao_situacao_cadastral": dados.get("situacao", "DESCONHECIDA"),
+                            "uf": dados.get("uf", ""),
+                            "municipio": dados.get("municipio", ""),
+                            "cnae_fiscal_descricao": (dados.get("atividade_principal", [{}]) or [{}])[0].get("text", "N/A")
+                        }
+                elif response.status_code == 404:
+                    return {"erro": "CNPJ não encontrado na base da Receita Federal."}
+            except (requests.RequestException, requests.Timeout):
+                pass
+        
+        time.sleep(1)
 
-    return {"erro": "A API da Receita Federal está instável no momento. Tente novamente em alguns instantes."}
+    return {"erro": "A API pública de consulta está temporariamente indisponível para este CNPJ de filial. Tente novamente em instantes."}
 
 def formatar_cnpj(cnpj: str) -> str:
     c = re.sub(r'\D', '', str(cnpj))
@@ -149,22 +162,18 @@ def formatar_cnpj(cnpj: str) -> str:
 
 def extrair_cnpj_unidade_escolar(texto: str) -> str:
     """Extrai o CNPJ estritamente contido no Bloco I (Identificação da Unidade Executora Própria)."""
-    # Procura especificamente pela âncora do Bloco I ou pelo rótulo do item 02
     texto_upper = texto.upper()
     
-    # Tenta encontrar o trecho exato do Bloco I até o Bloco II
     bloco_i_texto = texto_upper
     if "BLOCO II" in texto_upper:
         bloco_i_texto = texto_upper.split("BLOCO II")[0]
     
-    # Busca por um CNPJ que venha após o rótulo "02 - CNPJ" ou próximo de "UNIDADE EXECUTORA" / "BLOCO I"
     match_rotulo = re.search(r'(?:0?2\s*[-–]?\s*CNPJ|CNPJ)[:\s]*([0-9\.\-/]{14,18})', bloco_i_texto)
     if match_rotulo:
         c_limpo = re.sub(r'\D', '', match_rotulo.group(1))
         if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo):
             return c_limpo
 
-    # Se não achar pelo rótulo exato, pega todos os CNPJs do Bloco I e valida o primeiro matematicamente
     padrao_cnpj = r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b'
     cnpjs = re.findall(padrao_cnpj, bloco_i_texto)
     
@@ -315,6 +324,7 @@ if st.session_state.validado:
         st.info(f"**{st.session_state.tipo_doc}**")
 
     # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (APENAS DO BLOCO I)
+    cnpj_uex = ""
     if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
         st.divider()
         st.subheader("🏫 Unidade Escolar")
@@ -331,58 +341,55 @@ if st.session_state.validado:
         st.write(f"**Razão Social:** {razao_social_uex}")
         st.write(f"**CNPJ:** {cnpj_formatado_uex}")
 
-    import time
+    # 2º: VALIDAÇÃO NA RECEITA FEDERAL (DOS FORNECEDORES/PROPONENTES)
+    if st.session_state.tipo_doc != "Documento Genérico / Não Identificado":
+        st.divider()
+        st.subheader("🔍 Validação na Receita Federal")
 
-# --- CONSULTA À RECEITA FEDERAL COM MÚLTIPLAS APIS DE CONTINGÊNCIA ---
-
-@st.cache_data(ttl=3600)
-def consultar_receita_federal(cnpj: str) -> dict:
-    """Consulta múltiplas APIs públicas de CNPJ em cascata para evitar falhas de instabilidade."""
-    cnpj_limpo = re.sub(r'\D', '', str(cnpj))
-    
-    # Lista de APIs públicas alternativas ordenadas por confiabilidade
-    endpoints = [
-        f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_limpo}",
-        f"https://minhareceita.org/{cnpj_limpo}",
-        f"https://receitaws.com.br/v1/cnpj/{cnpj_limpo}"
-    ]
-
-    for tentativa in range(2):
-        for url in endpoints:
-            try:
-                response = requests.get(url, timeout=7)
-                if response.status_code == 200:
-                    dados = response.json()
-                    
-                    # Normalização para o padrão da BrasilAPI / Minha Receita
-                    if "minhareceita.org" in url or "brasilapi" in url:
-                        return {
-                            "razao_social": dados.get("razao_social") or dados.get("nome", "N/A"),
-                            "nome_fantasia": dados.get("nome_fantasia") or dados.get("fantasia", "Não informado"),
-                            "descricao_situacao_cadastral": dados.get("descricao_situacao_cadastral") or dados.get("situacao", "DESCONHECIDA"),
-                            "uf": dados.get("uf", ""),
-                            "municipio": dados.get("municipio", ""),
-                            "cnae_fiscal_descricao": dados.get("cnae_fiscal_descricao") or (dados.get("atividade_principal", [{}]) or [{}])[0].get("text", "N/A")
-                        }
-                    # Normalização para a ReceitaWS
-                    elif dados.get("status") != "ERROR":
-                        return {
-                            "razao_social": dados.get("nome", "N/A"),
-                            "nome_fantasia": dados.get("fantasia", "Não informado"),
-                            "descricao_situacao_cadastral": dados.get("situacao", "DESCONHECIDA"),
-                            "uf": dados.get("uf", ""),
-                            "municipio": dados.get("municipio", ""),
-                            "cnae_fiscal_descricao": (dados.get("atividade_principal", [{}]) or [{}])[0].get("text", "N/A")
-                        }
-                elif response.status_code == 404:
-                    return {"erro": "CNPJ não encontrado na base da Receita Federal."}
-            except (requests.RequestException, requests.Timeout):
-                pass
+        cnpjs_encontrados = extrair_cnpjs_de_texto(st.session_state.texto_processado)
         
-        time.sleep(1)
+        cnpj_uex_limpo = re.sub(r'\D', '', str(cnpj_uex)) if cnpj_uex else ""
 
-    return {"erro": "A API pública de consulta está temporariamente indisponível para este CNPJ de filial. Tente novamente em instantes."}
-    
+        cnpjs_para_exibir = [
+            c for c in cnpjs_encontrados 
+            if re.sub(r'\D', '', c) != "06697670000195" and (not cnpj_uex_limpo or re.sub(r'\D', '', c) != cnpj_uex_limpo)
+        ]
+
+        if not cnpjs_para_exibir:
+            st.warning("⚠️ Nenhum CNPJ de fornecedor/emitente válido foi encontrado no arquivo anexado.")
+        else:
+            for cnpj in cnpjs_para_exibir:
+                dados = consultar_receita_federal(cnpj)
+                cnpj_formatado = formatar_cnpj(cnpj)
+
+                if isinstance(dados, dict) and "erro" in dados:
+                    with st.expander(f"CNPJ: {cnpj_formatado}", expanded=True):
+                        st.error(f"❌ **CNPJ {cnpj_formatado}:** {dados['erro']}")
+                else:
+                    razao_social_oficial = dados.get("razao_social", "N/A")
+
+                    if "CONSELHO DE ESCOLA" in razao_social_oficial.upper():
+                        continue
+
+                    situacao = dados.get("descricao_situacao_cadastral", "DESCONHECIDA")
+                    nome_fantasia = dados.get("nome_fantasia") or "Não informado"
+                    uf = dados.get("uf", "")
+                    municipio = dados.get("municipio", "")
+
+                    with st.expander(f"CNPJ: {cnpj_formatado}", expanded=True):
+                        if situacao.upper() == "ATIVO":
+                            st.success(f"**Situação Cadastral:** {situacao}")
+                        else:
+                            st.warning(f"**Situação Cadastral:** {situacao}")
+
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write(f"**Razão Social Oficial:** {razao_social_oficial}")
+                            st.write(f"**Nome Fantasia:** {nome_fantasia}")
+                        with col2:
+                            st.write(f"**Cidade/UF:** {municipio} - {uf}")
+                            st.write(f"**Atividade Principal:** {dados.get('cnae_fiscal_descricao', 'N/A')}")
+
     # 3º: VALIDAÇÃO DOS BLOCOS (SE FOR CONSOLIDAÇÃO DE PREÇOS)
     if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
         st.divider()
