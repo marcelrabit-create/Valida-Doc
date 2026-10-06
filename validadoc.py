@@ -108,40 +108,47 @@ def identificar_tipo_documento(texto: str) -> str:
 
 # --- FUNÇÕES DE EXTRAÇÃO DE TEXTO E CNPJ ---
 
+def corrigir_substituicoes_ocr(string_cand: str) -> str:
+    """Corrige trocas de letras por números típicas em leituras de fotos/impressões."""
+    mapeamento = {
+        'O': '0', 'o': '0', 'D': '0',
+        'I': '1', 'l': '1', 'L': '1',
+        'Z': '2',
+        'S': '5', 's': '5',
+        'G': '6',
+        'B': '8'
+    }
+    res = []
+    for char in string_cand:
+        res.append(mapeamento.get(char, char))
+    return "".join(res)
+
 def extrair_cnpjs_de_texto(texto: str) -> list:
-    """Busca padrões de CNPJ no texto e valida matematicamente os dígitos."""
-    cnpjs_candidatos = set()
+    """Busca padrões de CNPJ no texto e aplica autocorreção de ruídos de OCR."""
+    cnpjs_validos = set()
 
     # 1. Padrão tradicional com pontuação/espaço
-    padrao_cnpj = r'\b\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[/\s]?\d{4}[-\s]?\d{2}\b'
+    padrao_cnpj = r'\b[0-9OoDDIlLZSsGGB]{2}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[/\s]?[0-9OoDDIlLZSsGGB]{4}[-\s]?[0-9OoDDIlLZSsGGB]{2}\b'
     for c in re.findall(padrao_cnpj, texto):
-        num = re.sub(r'\D', '', c)
-        if len(num) == 14:
-            cnpjs_candidatos.add(num)
+        c_corrigido = corrigir_substituicoes_ocr(c)
+        num = re.sub(r'\D', '', c_corrigido)
+        if len(num) == 14 and validar_digitos_cnpj(num):
+            cnpjs_validos.add(num)
 
-    # 2. Substituição de ruídos de OCR (O/o -> 0, I/l -> 1)
-    texto_trabalhado = texto.replace('O', '0').replace('o', '0').replace('I', '1').replace('l', '1')
-    for c in re.findall(padrao_cnpj, texto_trabalhado):
-        num = re.sub(r'\D', '', c)
-        if len(num) == 14:
-            cnpjs_candidatos.add(num)
-
-    # 3. Varredura por blocos numéricos contínuos
-    apenas_numeros = re.sub(r'\D', ' ', texto_trabalhado)
+    # 2. Varredura por blocos contínuos no texto limpo
+    texto_limpo = corrigir_substituicoes_ocr(texto)
+    apenas_numeros = re.sub(r'\D', ' ', texto_limpo)
     for bloco in apenas_numeros.split():
         if len(bloco) >= 14:
             for i in range(len(bloco) - 13):
                 cand = bloco[i:i+14]
-                if len(cand) == 14:
-                    cnpjs_candidatos.add(cand)
+                if len(cand) == 14 and validar_digitos_cnpj(cand):
+                    cnpjs_validos.add(cand)
 
-    # Aplica o filtro de validação matemática do dígito verificador
-    cnpjs_validos = [c for c in cnpjs_candidatos if validar_digitos_cnpj(c)]
-
-    return cnpjs_validos
+    return list(cnpjs_validos)
 
 def ler_arquivo(uploaded_file) -> str:
-    """Lê o arquivo anexado dependendo da extensão e retorna o texto extraído."""
+    """Lê o arquivo anexado utilizando OCR padrão e aprimorado por contraste."""
     extensao = uploaded_file.name.split('.')[-1].lower()
     texto_extraido = ""
 
@@ -149,14 +156,17 @@ def ler_arquivo(uploaded_file) -> str:
         if extensao in ['jpg', 'jpeg', 'png']:
             imagem = Image.open(uploaded_file)
             
-            # Leitura OCR Padrão
-            texto_extraido = pytesseract.image_to_string(imagem, lang='por')
+            # 1. Leitura padrão
+            texto_extraido += pytesseract.image_to_string(imagem, lang='por') + "\n"
             
-            if len(texto_extraido.strip()) < 40:
-                imagem_cinza = imagem.convert('L')
-                enhancer = ImageEnhance.Contrast(imagem_cinza)
-                imagem_contraste = enhancer.enhance(2.0)
-                texto_extraido += "\n" + pytesseract.image_to_string(imagem_contraste, lang='por')
+            # 2. Leitura com alto contraste para fotos de papel
+            img_cinza = imagem.convert('L')
+            enhancer = ImageEnhance.Contrast(img_cinza)
+            img_contraste = enhancer.enhance(2.5)
+            texto_extraido += pytesseract.image_to_string(img_contraste, lang='por') + "\n"
+            
+            # 3. Leitura PSM 6 (tabelas/blocos)
+            texto_extraido += pytesseract.image_to_string(img_contraste, lang='por', config='--psm 6') + "\n"
 
         elif extensao == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
@@ -170,7 +180,10 @@ def ler_arquivo(uploaded_file) -> str:
                 with pdfplumber.open(uploaded_file) as pdf:
                     for pagina in pdf.pages:
                         img = pagina.to_image().original
-                        texto_extraido += pytesseract.image_to_string(img, lang='por') + "\n"
+                        img_cinza = img.convert('L')
+                        enhancer = ImageEnhance.Contrast(img_cinza)
+                        img_contraste = enhancer.enhance(2.5)
+                        texto_extraido += pytesseract.image_to_string(img_contraste, lang='por') + "\n"
 
         elif extensao == 'txt':
             texto_extraido = uploaded_file.read().decode('utf-8', errors='ignore')
@@ -230,7 +243,6 @@ if arquivo is not None:
         st.info(f"**{tipo_documento}**")
 
     # 2. RESULTADOS DA VALIDAÇÃO NA RECEITA FEDERAL
-    # Exibe apenas se o tipo do documento FOR RECONHECIDO (diferente de "Documento Genérico / Não Identificado")
     if tipo_documento != "Documento Genérico / Não Identificado":
         st.divider()
         st.subheader("🔍 Validação na Receita Federal")
