@@ -229,11 +229,15 @@ def formatar_cnpj(cnpj: str) -> str:
 
 # --- INTERFACE E FLUXO PRINCIPAL ---
 
-arquivo = st.file_uploader(
-    "Anexe o documento (PDF, JPG, JPEG, PNG, TXT, XLS, XLSM)",
-    type=["pdf", "jpg", "jpeg", "png", "txt", "xls", "xlsm", "xlsx"],
-    key=f"uploader_{st.session_state.uploader_key}"
-)
+arquivo = None
+
+# Só mostra o uploader se ainda não foi validado
+if not st.session_state.validado:
+    arquivo = st.file_uploader(
+        "Anexe o documento (PDF, JPG, JPEG, PNG, TXT, XLS, XLSM)",
+        type=["pdf", "jpg", "jpeg", "png", "txt", "xls", "xlsm", "xlsx"],
+        key=f"uploader_{st.session_state.uploader_key}"
+    )
 
 if arquivo is not None:
     with st.spinner("Lendo e processando o documento..."):
@@ -253,7 +257,6 @@ if arquivo is not None:
         st.divider()
         st.subheader("🔍 Validação na Receita Federal")
 
-        # Filtra previamente o CNPJ do Conselho de Escola
         cnpjs_para_exibir = [c for c in cnpjs_encontrados if re.sub(r'\D', '', c) != "06697670000195"]
 
         if not cnpjs_para_exibir:
