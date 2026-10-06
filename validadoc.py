@@ -20,7 +20,7 @@ if "uploader_key" not in st.session_state:
 if "validado" not in st.session_state:
     st.session_state.validado = False
 
-# --- OCULTAR ELEMENTOS PADRÃO E ÁREA DE UPLOAD APÓS VALIDAÇÃO ---
+# --- OCULTAR ELEMENTOS PADRÃO DO STREAMLIT ---
 estilo_css = """
     <style>
     #MainMenu {visibility: hidden;}
@@ -29,7 +29,7 @@ estilo_css = """
     .stAppHeader {display: none;}
 """
 
-# Se já estiver validado, esconde a caixa de upload/drag and drop da tela
+# Só oculta a área de upload após o término completo da validação
 if st.session_state.validado:
     estilo_css += """
     div[data-testid="stFileUploader"] {
@@ -153,15 +153,10 @@ def formatar_cnpj(cnpj: str) -> str:
 arquivo = st.file_uploader(
     "Anexe o documento (PDF, JPG, JPEG, PNG, TXT, XLS, XLSM)",
     type=["pdf", "jpg", "jpeg", "png", "txt", "xls", "xlsm", "xlsx"],
-    key=f"uploader_{st.session_state.uploader_key}",
-    disabled=st.session_state.validado
+    key=f"uploader_{st.session_state.uploader_key}"
 )
 
-if arquivo is not None and not st.session_state.validado:
-    st.session_state.validado = True
-    st.rerun()
-
-if st.session_state.validado and arquivo is not None:
+if arquivo is not None:
     with st.spinner("Lendo e processando o documento..."):
         conteudo_texto = ler_arquivo(arquivo)
         cnpjs_encontrados = extrair_cnpjs_de_texto(conteudo_texto)
@@ -217,6 +212,11 @@ if st.session_state.validado and arquivo is not None:
                     with col2:
                         st.write(f"**Cidade/UF:** {municipio} - {uf}")
                         st.write(f"**Atividade Principal:** {dados.get('cnae_fiscal_descricao', 'N/A')}")
+
+    # Marca a validação como concluída ao FINAL do processamento
+    if not st.session_state.validado:
+        st.session_state.validado = True
+        st.rerun()
 
     # --- BOTÕES DE NAVEGAÇÃO E ENCERRAMENTO ---
     st.divider()
