@@ -101,20 +101,45 @@ def identificar_tipo_documento(texto: str) -> str:
     else:
         return "Documento Genérico / Não Identificado"
 
-# --- EXTRAÇÃO DO BLOCO I (IDENTIFICAÇÃO DA UNIDADE) ---
+# --- EXTRAÇÃO DE RAZÃO SOCIAL E CNPJ DO BLOCO I ---
 
-def extrair_bloco_i(texto: str) -> str:
-    """Extrai as informações correspondentes ao Bloco I - Identificação."""
+def extrair_razao_social_cnpj_bloco_i(texto: str) -> dict:
+    """Isola o Bloco I e tenta extrair especificamente a Razão Social/Unidade Escolar e o CNPJ."""
     texto_upper = texto.upper()
+    bloco_i_texto = ""
+
     if "BLOCO I" in texto_upper:
         partes = texto_upper.split("BLOCO I")
         resto = partes[1]
-        # Tenta cortar até o próximo bloco para isolar o Bloco I
         for prox in ["BLOCO II", "BLOCO III", "BLOCO IV"]:
             if prox in resto:
                 resto = resto.split(prox)[0]
-        return resto.strip()
-    return "Informações do Bloco I não encontradas explicitamente."
+        bloco_i_texto = resto
+
+    # Busca por padrões comuns de Razão Social / Nome da Unidade Escolar
+    razao_social = "Não identificada"
+    padroes_rs = [r'UNIDADE\s*ESCOLAR[:\s]*([^\n]+)', r'RAZÃO\s*SOCIAL[:\s]*([^\n]+)', r'ESCOLA[:\s]*([^\n]+)']
+    for padrao in padroes_rs:
+        match = re.search(padrao, bloco_i_texto)
+        if match:
+            razao_social = match.group(1).strip()
+            break
+    
+    # Se não achou por rótulo específico, pega a primeira linha relevante do bloco I
+    if razao_social == "Não identificada" and bloco_i_texto:
+        linhas = [l.strip() for l in bloco_i_texto.split('\n') if len(l.strip()) > 5]
+        if linhas:
+            razao_social = linhas[0]
+
+    # Busca por CNPJ dentro do Bloco I
+    padrao_cnpj = r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b'
+    cnpjs_bloco_i = re.findall(padrao_cnpj, bloco_i_texto)
+    cnpj_encontrado = cnpjs_bloco_i[0] if cnpjs_bloco_i else "Não encontrado"
+
+    return {
+        "razao_social": razao_social,
+        "cnpj": cnpj_encontrado
+    }
 
 # --- VALIDAÇÕES ESPECÍFICAS PARA CONSOLIDAÇÃO DE PREÇOS ---
 
@@ -294,12 +319,14 @@ if st.session_state.validado:
     else:
         st.info(f"**{st.session_state.tipo_doc}**")
 
-    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (BLOCO I) - SE FOR CONSOLIDAÇÃO DE PREÇOS
+    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (APENAS RAZÃO SOCIAL E CNPJ DO BLOCO I)
     if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
         st.divider()
         st.subheader("🏫 Identificação da Unidade Escolar (Bloco I)")
-        bloco_i_info = extrair_bloco_i(st.session_state.texto_processado)
-        st.info(bloco_i_info)
+        dados_bloco_i = extrair_razao_social_cnpj_bloco_i(st.session_state.texto_processado)
+        
+        st.write(f"**Razão Social:** {dados_bloco_i['razao_social']}")
+        st.write(f"**CNPJ:** {dados_bloco_i['cnpj']}")
 
     # 2º: VALIDAÇÃO NA RECEITA FEDERAL
     if st.session_state.tipo_doc != "Documento Genérico / Não Identificado":
@@ -310,7 +337,7 @@ if st.session_state.validado:
         cnpjs_para_exibir = [c for c in cnpjs_encontrados if re.sub(r'\D', '', c) != "06697670000195"]
 
         if not cnpjs_para_exibir:
-            st.warning("⚠️️ Nenhum CNPJ de fornecedor/emitente válido foi encontrado no arquivo anexado.")
+            st.warning("⚠️ Nenhum CNPJ de fornecedor/emitente válido foi encontrado no arquivo anexado.")
         else:
             for cnpj in cnpjs_para_exibir:
                 dados = consultar_receita_federal(cnpj)
