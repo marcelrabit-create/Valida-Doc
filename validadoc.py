@@ -48,13 +48,16 @@ def identificar_tipo_documento(texto: str) -> str:
     """Classifica o documento com base em palavras-chave encontradas no texto."""
     texto_upper = texto.upper()
 
-    if "CONSOLIDACAO DE PESQUISAS DE PRECOS" in texto_upper or "CONSOLIDAÇÃO DE PESQUISAS DE PREÇOS" in texto_upper or "PDDE" in texto_upper:
+    # 1. Consolidação de Pesquisas de Preços
+    if "CONSOLIDACAO DE PESQUISAS DE PRECOS" in texto_upper or "CONSOLIDAÇÃO DE PESQUISAS DE PREÇOS" in texto_upper or "BLOCO I - IDENTIFICAÇÃO" in texto_upper:
         return "Consolidação de Pesquisas de Preços"
     
-    elif "NOTA FISCAL DE SERVICOS" in texto_upper or "NOTA FISCAL DE SERVIÇOS" in texto_upper or "NFS-E" in texto_upper or "NFSE" in texto_upper or "PRESTAÇÃO DE SERVIÇOS" in texto_upper:
+    # 2. Nota Fiscal de Serviços (NFS-e)
+    elif "NOTA FISCAL DE SERVICOS" in texto_upper or "NOTA FISCAL DE SERVIÇOS" in texto_upper or "NFS-E" in texto_upper or "NFSE" in texto_upper or "PRESTACAO DE SERVICOS" in texto_upper or "PRESTAÇÃO DE SERVIÇOS" in texto_upper:
         return "Nota Fiscal de Serviços"
     
-    elif "DANFE" in texto_upper or "NOTA FISCAL ELETRÔNICA" in texto_upper or "NOTA FISCAL ELETRONICA" in texto_upper or "NF-E" in texto_upper or "DOCUMENTO AUXILIAR DA NOTA FISCAL" in texto_upper:
+    # 3. Nota Fiscal de Compra de Materiais (DANFE / NF-e / Venda de Mercadoria)
+    elif "DANFE" in texto_upper or "DOCUMENTO AUXILIAR DA NOTA FISCAL" in texto_upper or "VENDA DE MERCADORIA" in texto_upper or "NFE" in texto_upper or "NF-E" in texto_upper or "CHAVE DE ACESSO" in texto_upper or "DADOS DOS PRODUTOS" in texto_upper:
         return "Nota Fiscal de Compra de Materiais"
     
     else:
