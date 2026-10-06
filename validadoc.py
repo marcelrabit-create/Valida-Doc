@@ -13,6 +13,17 @@ st.set_page_config(page_title="Validador de Documentos", page_icon="📋", layou
 st.title("📋 Validador de Documentos")
 st.write("Faça upload do documento para extrair e consultar os CNPJs na Receita Federal.")
 
+# --- OCULTAR ELEMENTOS PADRÃO DO STREAMLIT ---
+ocultar_elementos_streamlit = """
+    <style>
+    #MainMenu {visibility: hidden;}
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    .stAppHeader {display: none;}
+    </style>
+"""
+st.markdown(ocultar_elementos_streamlit, unsafe_allow_html=True)
+
 # --- FUNÇÕES DE EXTRAÇÃO DE TEXTO ---
 
 def extrair_cnpjs_de_texto(texto: str) -> list:
