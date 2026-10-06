@@ -205,7 +205,7 @@ if arquivo is not None:
 
     # --- BOTÃO DE NAVEGAÇÃO ---
     st.divider()
-    if st.button("⬅️ Voltar (Nova Validação)", use_container_width=True):
+    if st.button("⬅️ Voltar", use_container_width=True):
         st.session_state.validado = False
         st.session_state.uploader_key += 1
         st.rerun()
