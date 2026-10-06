@@ -251,27 +251,20 @@ if arquivo is not None:
             st.warning("⚠️ Nenhum CNPJ válido foi encontrado no arquivo anexado.")
         else:
             for cnpj in cnpjs_encontrados:
-                cnpj_formatado = formatar_cnpj(cnpj)
-                
-                # Se o CNPJ estiver associado diretamente ao termo CONSELHO DE ESCOLA no texto extraído, pula sem consultar
-                if "CONSELHO DE ESCOLA" in conteudo_texto.upper() and (cnpj_formatado in conteudo_texto or cnpj in conteudo_texto):
-                    continue
-
                 dados = consultar_receita_federal(cnpj)
 
-                razao_social_oficial = dados.get("razao_social", "") if isinstance(dados, dict) else ""
-
-                # FILTRO SILENCIOSO: Se for "Conselho de Escola", ignora e não exibe na tela
-                if "CONSELHO DE ESCOLA" in razao_social_oficial.upper():
-                    continue
-
                 if "erro" in dados:
-                    # Oculta mensagens de erro 500 caso seja instabilidade referente a entidades públicas/conselhos
-                    if "500" in str(dados.get("erro", "")):
-                        continue
+                    cnpj_formatado = formatar_cnpj(cnpj)
                     with st.expander(f"CNPJ: {cnpj_formatado}", expanded=True):
                         st.error(f"❌ **CNPJ {cnpj_formatado}:** {dados['erro']}")
                 else:
+                    razao_social_oficial = dados.get("razao_social", "N/A")
+
+                    # FILTRO: Se for "Conselho de Escola", ignora e não exibe na tela
+                    if "CONSELHO DE ESCOLA" in razao_social_oficial.upper():
+                        continue
+
+                    cnpj_formatado = formatar_cnpj(cnpj)
                     situacao = dados.get("descricao_situacao_cadastral", "DESCONHECIDA")
                     nome_fantasia = dados.get("nome_fantasia") or "Não informado"
                     uf = dados.get("uf", "")
