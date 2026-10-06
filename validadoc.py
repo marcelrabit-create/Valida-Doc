@@ -40,7 +40,7 @@ if st.session_state.sessao_encerrada:
     st.stop()
 
 st.title("📋 Validador de Documentos")
-st.write("Faça upload do documento para extrair e consultar os CNPJs na Receita Federal.")
+st.write("Faça upload do documento para validar as informações.")
 
 # --- FUNÇÕES DE EXTRAÇÃO DE TEXTO ---
 
