@@ -1,9 +1,10 @@
 import streamlit as st
 import re
 import requests
+import json
 import pandas as pd
 import pdfplumber
-from PIL import Image, ImageEnhance
+from PIL import Image
 import pytesseract
 
 # Configuração da página
@@ -38,26 +39,6 @@ st.markdown(estilo_css, unsafe_allow_html=True)
 
 st.title("📋 Validador de Documentos")
 st.write("Faça upload do documento para identificar o tipo e validar os CNPJs na Receita Federal.")
-
-# --- VALIDAÇÃO MATEMÁTICA DE CNPJ (MÓDULO 11) ---
-
-def validar_digitos_cnpj(cnpj: str) -> bool:
-    """Valida se uma string de 14 dígitos numéricos é um CNPJ matematicamente válido."""
-    if len(cnpj) != 14 or len(set(cnpj)) == 1:
-        return False
-
-    def calcular_digito(fatia, pesos):
-        soma = sum(int(a) * b for a, b in zip(fatia, pesos))
-        resto = soma % 11
-        return '0' if resto < 2 else str(11 - resto)
-
-    pesos1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
-    pesos2 = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
-
-    digito1 = calcular_digito(cnpj[:12], pesos1)
-    digito2 = calcular_digito(cnpj[:12] + digito1, pesos2)
-
-    return cnpj[-2:] == digito1 + digito2
 
 # --- FUNÇÃO DE CLASSIFICAÇÃO DO DOCUMENTO ---
 
@@ -109,36 +90,36 @@ def identificar_tipo_documento(texto: str) -> str:
 # --- FUNÇÕES DE EXTRAÇÃO DE TEXTO E CNPJ ---
 
 def extrair_cnpjs_de_texto(texto: str) -> list:
-    """Busca padrões de CNPJ no texto e valida matematicamente os dígitos."""
-    cnpjs_candidatos = set()
+    """Busca padrões de CNPJ (com tratamento para erros comuns de OCR e máscaras)."""
+    cnpjs_limpos = set()
 
-    # 1. Padrão tradicional com pontuação/espaço
-    padrao_cnpj = r'\b\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[/\s]?\d{4}[-\s]?\d{2}\b'
-    for c in re.findall(padrao_cnpj, texto):
-        num = re.sub(r'\D', '', c)
-        if len(num) == 14:
-            cnpjs_candidatos.add(num)
+    # 1. Busca por CNPJ com formatação padrão (ex: 00.000.000/0000-00)
+    padrao_formatado = r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}'
+    encontrados_formatados = re.findall(padrao_formatado, texto)
+    for item in encontrados_formatados:
+        numeros = re.sub(r'\D', '', item)
+        if len(numeros) == 14:
+            cnpjs_limpos.add(numeros)
 
-    # 2. Substituição de ruídos de OCR (O/o -> 0, I/l -> 1)
+    # 2. Tratamento do texto para erros comuns de OCR (converte O/o para 0 e I/l para 1)
     texto_trabalhado = texto.replace('O', '0').replace('o', '0').replace('I', '1').replace('l', '1')
-    for c in re.findall(padrao_cnpj, texto_trabalhado):
-        num = re.sub(r'\D', '', c)
-        if len(num) == 14:
-            cnpjs_candidatos.add(num)
 
-    # 3. Varredura por blocos numéricos continuos
-    apenas_numeros = re.sub(r'\D', ' ', texto_trabalhado)
-    for bloco in apenas_numeros.split():
-        if len(bloco) >= 14:
-            for i in range(len(bloco) - 13):
-                cand = bloco[i:i+14]
-                if len(cand) == 14:
-                    cnpjs_candidatos.add(cand)
+    # Busca por padrões genéricos mantendo pontuações/espaços próximos
+    padrao_generico = r'\b\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[/\s]?\d{4}[-\s]?\d{2}\b'
+    encontrados_genericos = re.findall(padrao_generico, texto_trabalhado)
+    for item in encontrados_genericos:
+        numeros = re.sub(r'\D', '', item)
+        if len(numeros) == 14:
+            cnpjs_limpos.add(numeros)
 
-    # Aplica o filtro de validação matemática do dígito verificador
-    cnpjs_validos = [c for c in cnpjs_candidatos if validar_digitos_cnpj(c)]
+    # 3. Fallback: Varre sequências de dígitos de 14 a 18 números no texto limpo
+    todas_sequencias = re.findall(r'\d{14,18}', re.sub(r'\D', ' ', texto_trabalhado))
+    for seq in todas_sequencias:
+        cand = seq[:14]
+        if len(cand) == 14:
+            cnpjs_limpos.add(cand)
 
-    return cnpjs_validos
+    return list(cnpjs_limpos)
 
 def ler_arquivo(uploaded_file) -> str:
     """Lê o arquivo anexado dependendo da extensão e retorna o texto extraído."""
@@ -148,15 +129,7 @@ def ler_arquivo(uploaded_file) -> str:
     try:
         if extensao in ['jpg', 'jpeg', 'png']:
             imagem = Image.open(uploaded_file)
-            
-            # Leitura OCR Padrão
             texto_extraido = pytesseract.image_to_string(imagem, lang='por')
-            
-            if len(texto_extraido.strip()) < 40:
-                imagem_cinza = imagem.convert('L')
-                enhancer = ImageEnhance.Contrast(imagem_cinza)
-                imagem_contraste = enhancer.enhance(2.0)
-                texto_extraido += "\n" + pytesseract.image_to_string(imagem_contraste, lang='por')
 
         elif extensao == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
@@ -164,7 +137,6 @@ def ler_arquivo(uploaded_file) -> str:
                     t = pagina.extract_text()
                     if t:
                         texto_extraido += t + "\n"
-                        
             if not texto_extraido.strip():
                 uploaded_file.seek(0)
                 with pdfplumber.open(uploaded_file) as pdf:
@@ -176,12 +148,12 @@ def ler_arquivo(uploaded_file) -> str:
             texto_extraido = uploaded_file.read().decode('utf-8', errors='ignore')
 
         elif extensao in ['xls', 'xlsm', 'xlsx']:
-            df_dict = pd.read_excel(uploaded_file, sheet_name=None)
-            for nome_aba, aba in df_dict.items():
+            df = pd.read_excel(uploaded_file, sheet_name=None)
+            for nome_aba, aba in df.items():
                 texto_extraido += f" {aba.to_string()} "
 
     except Exception as e:
-        st.error(f"Erro ao processar o arquivo: {e}")
+        st.error(f"Erro ao ler o arquivo: {e}")
 
     return texto_extraido
 
