@@ -1,10 +1,9 @@
 import streamlit as st
 import re
 import requests
-import json
 import pandas as pd
 import pdfplumber
-from PIL import Image, ImageEnhance, ImageOps
+from PIL import Image, ImageEnhance
 import pytesseract
 
 # Configuração da página
@@ -90,28 +89,27 @@ def identificar_tipo_documento(texto: str) -> str:
 # --- FUNÇÕES DE EXTRAÇÃO DE TEXTO E CNPJ ---
 
 def extrair_cnpjs_de_texto(texto: str) -> list:
-    """Busca padrões de CNPJ com múltiplos níveis de tolerância."""
+    """Busca padrões de CNPJ no texto com substituição de ruídos de OCR."""
     cnpjs_limpos = set()
 
-    # 1. Padrão formatado rigoroso (XX.XXX.XXX/XXXX-XX)
-    padrao_formatado = r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}'
-    for item in re.findall(padrao_formatado, texto):
-        num = re.sub(r'\D', '', item)
+    # 1. Busca por padrões tradicionais de CNPJ (com ou sem pontuação)
+    padrao_cnpj = r'\b\d{2}[\.\s]?\d{3}[\.\s]?\d{3}[/\s]?\d{4}[-\s]?\d{2}\b'
+    encontrados = re.findall(padrao_cnpj, texto)
+    for c in encontrados:
+        num = re.sub(r'\D', '', c)
         if len(num) == 14:
             cnpjs_limpos.add(num)
 
-    # 2. Substituição de confusões clássicas de OCR (O/o -> 0, I/l/L -> 1)
-    texto_modificado = texto.replace('O', '0').replace('o', '0').replace('I', '1').replace('l', '1').replace('L', '1')
-
-    # Busca padrão flexível de CNPJ
-    padrao_flexivel = r'\d{2}[^\d]?\d{3}[^\d]?\d{3}[^\d]?\d{4}[^\d]?\d{2}'
-    for item in re.findall(padrao_flexivel, texto_modificado):
-        num = re.sub(r'\D', '', item)
+    # 2. Tratamento para falhas comuns de OCR (substitui 'O/o' por '0', 'I/l' por '1')
+    texto_trabalhado = texto.replace('O', '0').replace('o', '0').replace('I', '1').replace('l', '1')
+    encontrados_trabalhados = re.findall(padrao_cnpj, texto_trabalhado)
+    for c in encontrados_trabalhados:
+        num = re.sub(r'\D', '', c)
         if len(num) == 14:
             cnpjs_limpos.add(num)
 
-    # 3. Extração por blocos contínuos de dígitos
-    apenas_numeros = re.sub(r'\D', ' ', texto_modificado)
+    # 3. Varredura direta em sequências numéricas continuas
+    apenas_numeros = re.sub(r'\D', ' ', texto_trabalhado)
     for bloco in apenas_numeros.split():
         if len(bloco) >= 14:
             for i in range(len(bloco) - 13):
@@ -121,18 +119,8 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
 
     return list(cnpjs_limpos)
 
-def pre_processar_imagem(img: Image.Image) -> Image.Image:
-    """Aplica escala de cinza, alto contraste e binarização para reforçar textos em tabelas."""
-    img = img.convert('L')
-    enhancer = ImageEnhance.Contrast(img)
-    img = enhancer.enhance(3.0)
-    # Binarização (Limiarização)
-    threshold = 180
-    img = img.point(lambda p: 255 if p > threshold else 0)
-    return img
-
 def ler_arquivo(uploaded_file) -> str:
-    """Lê o arquivo anexado utilizando OCR normal e OCR binarizado de alta definição."""
+    """Lê o arquivo anexado dependendo da extensão e retorna o texto extraído."""
     extensao = uploaded_file.name.split('.')[-1].lower()
     texto_extraido = ""
 
@@ -140,16 +128,15 @@ def ler_arquivo(uploaded_file) -> str:
         if extensao in ['jpg', 'jpeg', 'png']:
             imagem = Image.open(uploaded_file)
             
-            # Passada 1: OCR Padrão
-            texto_extraido += pytesseract.image_to_string(imagem, lang='por') + "\n"
+            # Leitura OCR Padrão
+            texto_extraido = pytesseract.image_to_string(imagem, lang='por')
             
-            # Passada 2: Otimizada para tabelas e blocos de texto (PSM 6)
-            texto_extraido += pytesseract.image_to_string(imagem, lang='por', config='--psm 6') + "\n"
-            
-            # Passada 3: Imagem binarizada (remove sombras de tabelas de NFS-e)
-            imagem_tratada = pre_processar_imagem(imagem)
-            texto_extraido += pytesseract.image_to_string(imagem_tratada, lang='por', config='--psm 6') + "\n"
-            texto_extraido += pytesseract.image_to_string(imagem_tratada, lang='por', config='--psm 11') + "\n"
+            # Se a leitura inicial for fraca, tenta com ajuste simples de contraste
+            if len(texto_extraido.strip()) < 40:
+                imagem_cinza = imagem.convert('L')
+                enhancer = ImageEnhance.Contrast(imagem_cinza)
+                imagem_contraste = enhancer.enhance(2.0)
+                texto_extraido += "\n" + pytesseract.image_to_string(imagem_contraste, lang='por')
 
         elif extensao == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
@@ -157,24 +144,25 @@ def ler_arquivo(uploaded_file) -> str:
                     t = pagina.extract_text()
                     if t:
                         texto_extraido += t + "\n"
+                        
+            # Se for PDF de imagem (scaneado sem camada de texto)
             if not texto_extraido.strip():
                 uploaded_file.seek(0)
                 with pdfplumber.open(uploaded_file) as pdf:
                     for pagina in pdf.pages:
                         img = pagina.to_image().original
-                        img_tratada = pre_processar_imagem(img)
-                        texto_extraido += pytesseract.image_to_string(img_tratada, lang='por', config='--psm 6') + "\n"
+                        texto_extraido += pytesseract.image_to_string(img, lang='por') + "\n"
 
         elif extensao == 'txt':
             texto_extraido = uploaded_file.read().decode('utf-8', errors='ignore')
 
         elif extensao in ['xls', 'xlsm', 'xlsx']:
-            df = pd.read_excel(uploaded_file, sheet_name=None)
-            for nome_aba, aba in df.items():
+            df_dict = pd.read_excel(uploaded_file, sheet_name=None)
+            for nome_aba, aba in df_dict.items():
                 texto_extraido += f" {aba.to_string()} "
 
     except Exception as e:
-        st.error(f"Erro ao ler o arquivo: {e}")
+        st.error(f"Erro ao processar o arquivo: {e}")
 
     return texto_extraido
 
@@ -271,7 +259,7 @@ if arquivo is not None:
 
     # --- BOTÃO DE NAVEGAÇÃO ---
     st.divider()
-    if st.button("⬅️️ Voltar (Nova Validação)", use_container_width=True):
+    if st.button("⬅️ Voltar (Nova Validação)", use_container_width=True):
         st.session_state.validado = False
         st.session_state.uploader_key += 1
         st.rerun()
