@@ -1,0 +1,9 @@
+Plaintext
+
+streamlit
+requests
+pandas
+openpyxl
+pdfplumber
+pytesseract
+Pillow
