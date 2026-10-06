@@ -57,15 +57,22 @@ def validar_digitos_cnpj(cnpj: str) -> bool:
 
     return cnpj[-2:] == digito1 + digito2
 
-# --- FUNÇÃO DE CLASSIFICAÇÃO DO DOCUMENTO ---
+# --- FUNÇÃO DE CLASSIFICAÇÃO DO DOCUMENTO (ROBUSTA) ---
 
 def identificar_tipo_documento(texto: str) -> str:
-    """Classifica o documento com base em palavras-chave encontradas no texto."""
+    """Classifica o documento com base em palavras-chave abrangentes encontradas no texto."""
     texto_upper = texto.upper()
 
-    if "CONSOLIDACAO DE PESQUISAS DE PRECOS" in texto_upper or "CONSOLIDAÇÃO DE PESQUISAS DE PREÇOS" in texto_upper or "BLOCO I - IDENTIFICAÇÃO" in texto_upper:
+    # Identificação flexível de Consolidação de Pesquisas de Preços (FNDE / PDDE / UEX / Blocos)
+    if (
+        "CONSOLIDACAO" in texto_upper or "CONSOLIDAÇÃO" in texto_upper or 
+        "PESQUISAS DE PRECOS" in texto_upper or "PESQUISAS DE PREÇOS" in texto_upper or 
+        "BLOCO I" in texto_upper or "UEX" in texto_upper or 
+        ("FNDE" in texto_upper and "BLOCO" in texto_upper)
+    ):
         return "Consolidação de Pesquisas de Preços"
     
+    # Nota Fiscal de Serviços
     elif (
         "NOTA FISCAL DE SERVICOS" in texto_upper or 
         "NOTA FISCAL DE SERVIÇOS" in texto_upper or 
@@ -87,6 +94,7 @@ def identificar_tipo_documento(texto: str) -> str:
     ):
         return "Nota Fiscal de Serviços"
     
+    # Nota Fiscal de Compra de Materiais
     elif (
         "DANFE" in texto_upper or 
         "DOCUMENTO AUXILIAR DA NOTA FISCAL" in texto_upper or 
@@ -105,7 +113,6 @@ def identificar_tipo_documento(texto: str) -> str:
 
 @st.cache_data(ttl=3600)
 def consultar_receita_federal(cnpj: str) -> dict:
-    """Consulta a BrasilAPI e usa a ReceitaWS como contingência caso ocorra erro no servidor."""
     cnpj_limpo = re.sub(r'\D', '', str(cnpj))
     
     url_brasil_api = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_limpo}"
@@ -144,10 +151,17 @@ def formatar_cnpj(cnpj: str) -> str:
 # --- EXTRAÇÃO DO CNPJ DO BLOCO I (UNIDADE ESCOLAR) ---
 
 def extrair_cnpj_unidade_escolar(texto: str) -> str:
-    """Identifica o CNPJ da Unidade Escolar (item 02 do Bloco I) no documento."""
+    """Identifica com precisão o CNPJ da Unidade Escolar (item 02 do Bloco I)."""
+    # Procura especificamente por padrões contendo o item 02 ou CNPJ logo no início do texto
+    match_cnpj_bloco1 = re.search(r'(?:0?2\s*[-–]?\s*CNPJ|CNPJ)[:\s]*([0-9\.\-/]+)', texto[:1000], re.IGNORECASE)
+    if match_cnpj_bloco1:
+        c_limpo = re.sub(r'\D', '', match_cnpj_bloco1.group(1))
+        if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo):
+            return c_limpo
+
+    # Fallback buscando todos os CNPJs válidos no terço superior do documento
     padrao_cnpj = r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b'
-    cnpjs = re.findall(padrao_cnpj, texto[:800]) # Foca no topo (Bloco I)
-    
+    cnpjs = re.findall(padrao_cnpj, texto[:1000])
     for c in cnpjs:
         c_limpo = re.sub(r'\D', '', c)
         if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo):
