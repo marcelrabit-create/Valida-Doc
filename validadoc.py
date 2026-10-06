@@ -101,56 +101,58 @@ def identificar_tipo_documento(texto: str) -> str:
     else:
         return "Documento Genérico / Não Identificado"
 
-# --- EXTRAÇÃO ROBUSTA DO ITEM 01 E ITEM 02 DO BLOCO I ---
+# --- CONSULTA À RECEITA FEDERAL COM API DE CONTINGÊNCIA ---
 
-def extrair_bloco_i_unidade(texto: str) -> dict:
-    """Extrai com precisão a Razão Social (Item 01) e o CNPJ (Item 02) do Bloco I."""
-    razao_social = "Não identificada"
-    cnpj_encontrado = "Não encontrado"
-
-    # Divide o texto em linhas para análise sequencial do topo (Bloco I)
-    linhas = [linha.strip() for linha in texto.split('\n') if linha.strip()]
+@st.cache_data(ttl=3600)
+def consultar_receita_federal(cnpj: str) -> dict:
+    """Consulta a BrasilAPI e usa a ReceitaWS como contingência caso ocorra erro no servidor."""
+    cnpj_limpo = re.sub(r'\D', '', str(cnpj))
     
-    for i, linha in enumerate(linhas):
-        linha_upper = linha.upper()
-        
-        # Procura pela linha do Conselho de Escola ou Item 01
-        if "CONSELHO DE ESCOLA" in linha_upper or "UEX" in linha_upper:
-            razao_social = linha
-            break
-        elif "01" in linha_upper and ("RAZÃO" in linha_upper or "SOCIAL" in linha_upper):
-            # Se a linha contiver o rótulo, pega o texto dela ou da linha seguinte
-            if len(linha) > 5 and not linha_upper.endswith("01"):
-                razao_social = re.sub(r'^01[\s\-–]*', '', linha).strip()
-            elif i + 1 < len(linhas):
-                razao_social = linhas[i + 1]
-            break
+    url_brasil_api = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_limpo}"
+    try:
+        response = requests.get(url_brasil_api, timeout=8)
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 404:
+            return {"erro": "CNPJ não encontrado na base da Receita Federal."}
+    except requests.RequestException:
+        pass
 
-    # Se ainda não achou, procura por qualquer linha contendo "CONSELHO DE ESCOLA" em todo o texto
-    if razao_social == "Não identificada":
-        for linha in linhas:
-            if "CONSELHO DE ESCOLA" in linha.upper():
-                razao_social = linha
-                break
+    url_receitaws = f"https://receitaws.com.br/v1/cnpj/{cnpj_limpo}"
+    try:
+        response_alt = requests.get(url_receitaws, timeout=8)
+        if response_alt.status_code == 200:
+            dados_alt = response_alt.json()
+            if dados_alt.get("status") != "ERROR":
+                return {
+                    "razao_social": dados_alt.get("nome", "N/A"),
+                    "nome_fantasia": dados_alt.get("fantasia", "Não informado"),
+                    "descricao_situacao_cadastral": dados_alt.get("situacao", "DESCONHECIDA"),
+                    "uf": dados_alt.get("uf", ""),
+                    "municipio": dados_alt.get("municipio", ""),
+                    "cnae_fiscal_descricao": dados_alt.get("atividade_principal", [{}])[0].get("text", "N/A")
+                }
+    except requests.RequestException:
+        pass
 
-    # Extração do CNPJ do Bloco I (Item 02)
+    return {"erro": "A API da Receita Federal está instável no momento. Tente novamente em alguns instantes."}
+
+def formatar_cnpj(cnpj: str) -> str:
+    c = re.sub(r'\D', '', str(cnpj))
+    return f"{c[:2]}.{c[2:5]}.{c[5:8]}/{c[8:12]}-{c[12:]}"
+
+# --- EXTRAÇÃO DO CNPJ DO BLOCO I (UNIDADE ESCOLAR) ---
+
+def extrair_cnpj_unidade_escolar(texto: str) -> str:
+    """Identifica o CNPJ da Unidade Escolar (item 02 do Bloco I) no documento."""
     padrao_cnpj = r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b'
-    cnpjs = re.findall(padrao_cnpj, texto[:800]) # Foca no topo do documento (Bloco I)
+    cnpjs = re.findall(padrao_cnpj, texto[:800]) # Foca no topo (Bloco I)
     
-    if cnpjs:
-        # Se houver múltiplos CNPJs no topo, o segundo ou o que vem logo após a UEX costuma ser o da escola, 
-        # mas validamos o formato de 14 dígitos
-        for c in cnpjs:
-            c_limpo = re.sub(r'\D', '', c)
-            if len(c_limpo) == 14:
-                # Evita pegar CNPJs de proponentes se o primeiro for o da escola
-                cnpj_encontrado = f"{c_limpo[:2]}.{c_limpo[2:5]}.{c_limpo[5:8]}/{c_limpo[8:12]}-{c_limpo[12:]}"
-                break
-
-    return {
-        "razao_social": razao_social,
-        "cnpj": cnpj_encontrado
-    }
+    for c in cnpjs:
+        c_limpo = re.sub(r'\D', '', c)
+        if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo):
+            return c_limpo
+    return ""
 
 # --- VALIDAÇÕES ESPECÍFICAS PARA CONSOLIDAÇÃO DE PREÇOS ---
 
@@ -187,7 +189,7 @@ def validar_consolidacao_precos(texto: str) -> list:
 
     return erros
 
-# --- EXTRAÇÃO DE TEXTO E CNPJ ---
+# --- EXTRAÇÃO DE TEXTO GERAL ---
 
 def corrigir_substituicoes_ocr(string_cand: str) -> str:
     mapeamento = {
@@ -266,45 +268,6 @@ def ler_arquivo(uploaded_file) -> str:
 
     return texto_extraido
 
-# --- CONSULTA À RECEITA FEDERAL COM API DE CONTINGÊNCIA ---
-
-@st.cache_data(ttl=3600)
-def consultar_receita_federal(cnpj: str) -> dict:
-    cnpj_limpo = re.sub(r'\D', '', str(cnpj))
-    
-    url_brasil_api = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_limpo}"
-    try:
-        response = requests.get(url_brasil_api, timeout=8)
-        if response.status_code == 200:
-            return response.json()
-        elif response.status_code == 404:
-            return {"erro": "CNPJ não encontrado na base da Receita Federal."}
-    except requests.RequestException:
-        pass
-
-    url_receitaws = f"https://receitaws.com.br/v1/cnpj/{cnpj_limpo}"
-    try:
-        response_alt = requests.get(url_receitaws, timeout=8)
-        if response_alt.status_code == 200:
-            dados_alt = response_alt.json()
-            if dados_alt.get("status") != "ERROR":
-                return {
-                    "razao_social": dados_alt.get("nome", "N/A"),
-                    "nome_fantasia": dados_alt.get("fantasia", "Não informado"),
-                    "descricao_situacao_cadastral": dados_alt.get("situacao", "DESCONHECIDA"),
-                    "uf": dados_alt.get("uf", ""),
-                    "municipio": dados_alt.get("municipio", ""),
-                    "cnae_fiscal_descricao": dados_alt.get("atividade_principal", [{}])[0].get("text", "N/A")
-                }
-    except requests.RequestException:
-        pass
-
-    return {"erro": "A API da Receita Federal está instável no momento. Tente novamente em alguns instantes."}
-
-def formatar_cnpj(cnpj: str) -> str:
-    c = re.sub(r'\D', '', str(cnpj))
-    return f"{c[:2]}.{c[2:5]}.{c[5:8]}/{c[8:12]}-{c[12:]}"
-
 # --- INTERFACE E FLUXO PRINCIPAL ---
 
 if not st.session_state.validado:
@@ -330,22 +293,35 @@ if st.session_state.validado:
     else:
         st.info(f"**{st.session_state.tipo_doc}**")
 
-    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (ITEM 01 E ITEM 02)
+    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (COM DADOS OFICIAIS DA RECEITA FEDERAL)
     if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
         st.divider()
         st.subheader("🏫 Unidade Escolar")
-        info_bloco_i = extrair_bloco_i_unidade(st.session_state.texto_processado)
         
-        st.write(f"**Razão Social:** {info_bloco_i['razao_social']}")
-        st.write(f"**CNPJ:** {info_bloco_i['cnpj']}")
+        cnpj_uex = extrair_cnpj_unidade_escolar(st.session_state.texto_processado)
+        if cnpj_uex:
+            dados_uex = consultar_receita_federal(cnpj_uex)
+            razao_social_uex = dados_uex.get("razao_social", "Não encontrada na Receita Federal")
+            cnpj_formatado_uex = formatar_cnpj(cnpj_uex)
+        else:
+            razao_social_uex = "Não identificada"
+            cnpj_formatado_uex = "Não encontrado"
 
-    # 2º: VALIDAÇÃO NA RECEITA FEDERAL
+        st.write(f"**Razão Social:** {razao_social_uex}")
+        st.write(f"**CNPJ:** {cnpj_formatado_uex}")
+
+    # 2º: VALIDAÇÃO NA RECEITA FEDERAL (DOS FORNECEDORES/PROPONENTES)
     if st.session_state.tipo_doc != "Documento Genérico / Não Identificado":
         st.divider()
         st.subheader("🔍 Validação na Receita Federal")
 
         cnpjs_encontrados = extrair_cnpjs_de_texto(st.session_state.texto_processado)
-        cnpjs_para_exibir = [c for c in cnpjs_encontrados if re.sub(r'\D', '', c) != "06697670000195"]
+        
+        # Exclui o CNPJ da Unidade Escolar da lista de proponentes, se presente
+        cnpjs_para_exibir = [
+            c for c in cnpjs_encontrados 
+            if re.sub(r'\D', '', c) != "06697670000195" and (not cnpj_uex or re.sub(r'\D', '', c) != cnpj_uex)
+        ]
 
         if not cnpjs_para_exibir:
             st.warning("⚠️ Nenhum CNPJ de fornecedor/emitente válido foi encontrado no arquivo anexado.")
