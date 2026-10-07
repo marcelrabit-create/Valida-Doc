@@ -6,8 +6,6 @@ import pdfplumber
 from PIL import Image, ImageEnhance
 import pytesseract
 import time
-import cv2
-import numpy as np
 
 # Configuração da página
 st.set_page_config(page_title="Validador de Documentos", page_icon="📋", layout="wide")
@@ -60,7 +58,7 @@ def validar_digitos_cnpj(cnpj: str) -> bool:
 
     return cnpj[-2:] == digito1 + digito2
 
-# --- FUNÇÃO DE CLASSIFICAÇÃO DO DOCUMENTO (FLEXÍVEL) ---
+# --- FUNÇÃO DE CLASSIFICAÇÃO DO DOCUMENTO ---
 
 def identificar_tipo_documento(texto: str) -> str:
     """Classifica o documento com base em palavras-chave abrangentes encontradas no texto."""
@@ -109,11 +107,11 @@ def identificar_tipo_documento(texto: str) -> str:
     else:
         return "Documento Genérico / Não Identificado"
 
-# --- CONSULTA À RECEITA FEDERAL COM MÚLTIPLAS APIS DE CONTINGÊNCIA ---
+# --- CONSULTA À RECEITA FEDERAL ---
 
 @st.cache_data(ttl=3600)
 def consultar_receita_federal(cnpj: str) -> dict:
-    """Consulta múltiplas APIs públicas de CNPJ em cascata para evitar falhas de instabilidade."""
+    """Consulta múltiplas APIs públicas de CNPJ em cascata."""
     cnpj_limpo = re.sub(r'\D', '', str(cnpj))
     
     endpoints = [
@@ -162,10 +160,10 @@ def formatar_cnpj(cnpj: str) -> str:
     c = re.sub(r'\D', '', str(cnpj))
     return f"{c[:2]}.{c[2:5]}.{c[5:8]}/{c[8:12]}-{c[12:]}"
 
-# --- EXTRAÇÃO ESTRITA DO CNPJ DO BLOCO I (UNIDADE ESCOLAR) ---
+# --- EXTRAÇÃO ESTRITA DO CNPJ DO BLOCO I ---
 
 def extrair_cnpj_unidade_escolar(texto: str) -> str:
-    """Extrai o CNPJ estritamente contido no Bloco I (Identificação da Unidade Executora Própria)."""
+    """Extrai o CNPJ estritamente contido no Bloco I."""
     texto_upper = texto.upper()
     
     bloco_i_texto = texto_upper
@@ -188,13 +186,16 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
             
     return ""
 
-# --- PRÉ-PROCESSAMENTO E TRATAMENTO DE TEXTO OCR ---
+# --- PRÉ-PROCESSAMENTO USANDO APENAS PILLOW ---
 
-def pre_processar_imagem_ocr(imagem_pil):
-    """Aplica binarização e limpeza de imagem para melhorar o OCR de textos pequenos/acinzentados."""
-    img_array = np.array(imagem_pil.convert('L'))
-    _, img_bin = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return Image.fromarray(img_bin)
+def pre_processar_imagem_pil(imagem_pil):
+    """Aplica binarização e ajuste de nitidez nativos do Pillow."""
+    img_cinza = imagem_pil.convert('L')
+    img_contraste = ImageEnhance.Contrast(img_cinza).enhance(3.0)
+    img_nitida = ImageEnhance.Sharpness(img_contraste).enhance(2.0)
+    threshold = 150
+    img_bin = img_nitida.point(lambda p: 255 if p > threshold else 0)
+    return img_bin
 
 def corrigir_substituicoes_ocr(string_cand: str) -> str:
     mapeamento = {
@@ -210,7 +211,6 @@ def corrigir_substituicoes_ocr(string_cand: str) -> str:
 def extrair_cnpjs_de_texto(texto: str) -> list:
     cnpjs_validos = set()
 
-    # Busca padrões comuns de CNPJ permitindo correções de letras confundidas pelo OCR
     padrao_cnpj = r'\b[0-9OoDDIlLZSsGGB]{2}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[/\s1lI|]?[0-9OoDDIlLZSsGGB]{4}[-\s]?[0-9OoDDIlLZSsGGB]{2}\b'
     for c in re.findall(padrao_cnpj, texto):
         c_corrigido = corrigir_substituicoes_ocr(c)
@@ -218,7 +218,6 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
         if len(num) == 14 and validar_digitos_cnpj(num):
             cnpjs_validos.add(num)
 
-    # Busca secundária por qualquer sequência de 14 dígitos válidos
     texto_limpo = corrigir_substituicoes_ocr(texto)
     apenas_numeros = re.sub(r'\D', ' ', texto_limpo)
     for bloco in apenas_numeros.split():
@@ -235,12 +234,10 @@ def validar_consolidacao_precos(texto: str) -> list:
     erros = []
     texto_upper = texto.upper()
 
-    # Verifica presença do Bloco IV no texto
     if "BLOCO IV" not in texto_upper and "APURAÇÃO" not in texto_upper and "APURACAO" not in texto_upper:
         erros.append("Bloco IV (Apuração das Propostas) não identificado no documento.")
         return erros
 
-    # Verifica se há indicação de item de menor valor (Proponente A, B ou C)
     tem_proponente_vencedor = False
     if re.search(r'PROPONENTE\s*\([ABC]\)\s*[\:\-\s]*[1-9]', texto_upper) or "14 - ITENS DE MENOR VALOR" in texto_upper or "PROPONENTE (A) 1" in texto_upper or "PROPONENTE (A)" in texto_upper:
         tem_proponente_vencedor = True
@@ -259,19 +256,16 @@ def ler_arquivo(uploaded_file) -> str:
         if extensao in ['jpg', 'jpeg', 'png']:
             imagem = Image.open(uploaded_file)
             
-            # Testa todos os 4 ângulos cardinais (0º, 90º, 180º, 270º) com e sem binarização Otsu
             for angulo in [0, 90, 180, 270]:
                 img_rot = imagem.rotate(angulo, expand=True) if angulo != 0 else imagem
                 
-                # Leitura normal em níveis de cinza com contraste aumentado
                 img_cinza = img_rot.convert('L')
                 enhancer = ImageEnhance.Contrast(img_cinza)
                 img_contraste = enhancer.enhance(2.5)
                 texto_extraido += pytesseract.image_to_string(img_contraste, lang='por') + "\n"
                 texto_extraido += pytesseract.image_to_string(img_contraste, lang='por', config='--psm 6') + "\n"
 
-                # Leitura com binarização OpenCV (Otsu) para tratar textos/CNPJs fracos ou acinzentados
-                img_bin = pre_processar_imagem_ocr(img_rot)
+                img_bin = pre_processar_imagem_pil(img_rot)
                 texto_extraido += pytesseract.image_to_string(img_bin, lang='por') + "\n"
                 texto_extraido += pytesseract.image_to_string(img_bin, lang='por', config='--psm 6') + "\n"
 
@@ -287,7 +281,7 @@ def ler_arquivo(uploaded_file) -> str:
                 with pdfplumber.open(uploaded_file) as pdf:
                     for pagina in pdf.pages:
                         img = pagina.to_image().original
-                        img_bin = pre_processar_imagem_ocr(img)
+                        img_bin = pre_processar_imagem_pil(img)
                         texto_extraido += pytesseract.image_to_string(img_bin, lang='por') + "\n"
 
         elif extensao == 'txt':
@@ -328,7 +322,7 @@ if st.session_state.validado:
     else:
         st.info(f"**{st.session_state.tipo_doc}**")
 
-    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (APENAS DO BLOCO I)
+    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR
     cnpj_uex = ""
     if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
         st.divider()
@@ -346,7 +340,7 @@ if st.session_state.validado:
         st.write(f"**Razão Social:** {razao_social_uex}")
         st.write(f"**CNPJ:** {cnpj_formatado_uex}")
 
-    # 2º: VALIDAÇÃO NA RECEITA FEDERAL (DOS FORNECEDORES/PROPONENTES)
+    # 2º: VALIDAÇÃO NA RECEITA FEDERAL
     if st.session_state.tipo_doc != "Documento Genérico / Não Identificado":
         st.divider()
         st.subheader("🔍 Validação na Receita Federal")
@@ -396,7 +390,7 @@ if st.session_state.validado:
                             st.write(f"**Cidade/UF:** {municipio} - {uf}")
                             st.write(f"**Atividade Principal:** {dados.get('cnae_fiscal_descricao', 'N/A')}")
 
-    # 3º: VALIDAÇÃO DOS BLOCOS (SE FOR CONSOLIDAÇÃO DE PREÇOS)
+    # 3º: VALIDAÇÃO DOS BLOCOS
     if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
         st.divider()
         st.subheader("🔍 Validação dos Blocos (Consolidação de Preços)")
@@ -410,7 +404,8 @@ if st.session_state.validado:
             st.success("✅ Nenhum erro encontrado nos blocos III e IV da consolidação.")
 
     st.divider()
-    if st.button("⬅ Voltar (Nova Validação)", use_container_width=True):
+    # BOTÃO ALTERADO SEM ÍCONE DE SETA:
+    if st.button("Voltar (Nova Validação)", use_container_width=True):
         st.session_state.validado = False
         st.session_state.texto_processado = ""
         st.session_state.tipo_doc = ""
