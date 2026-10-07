@@ -133,7 +133,7 @@ def formatar_cnpj(cnpj: str) -> str:
 def extrair_cnpjs_de_texto(texto: str) -> list:
     cnpjs_validos = []
 
-    # Procura por padrões com máscaras pontuadas ou com substituições de OCR
+    # Procura por padrões pontuados ou com erros comuns de OCR
     padrao_cnpj = r'\b[0-9OoDDIlLZSsGGB]{2}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[/\s1lI|]?[0-9OoDDIlLZSsGGB]{4}[-\s]?[0-9OoDDIlLZSsGGB]{2}\b'
     for c in re.findall(padrao_cnpj, texto):
         c_corrigido = corrigir_substituicoes_ocr(c)
@@ -141,7 +141,7 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
         if len(num) == 14 and validar_digitos_cnpj(num) and num not in cnpjs_validos:
             cnpjs_validos.append(num)
 
-    # Varredura em blocos contínuos de dígitos
+    # Varredura complementar em sequências contínuas
     texto_limpo = corrigir_substituicoes_ocr(texto)
     apenas_numeros = re.sub(r'\D', ' ', texto_limpo)
     for bloco in apenas_numeros.split():
@@ -158,10 +158,11 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
 def extrair_cnpj_unidade_escolar(texto: str) -> str:
     texto_corrigido = corrigir_substituicoes_ocr(texto)
     
-    # 1. Tenta capturar o CNPJ que esteja diretamente ligado a termos de Unidade Escolar
+    # 1. Tenta capturar CNPJ próximo aos rótulos do Bloco I / Cabeçalho
     padroes_especificos = [
         r'(?:CONSELHO|EMEEIF|EMEF|UEX|ESCOLA)[^\d]*(\d[\d\.\-/]{13,18}\d)',
-        r'(?:02|0Z|O2|2)\s*[\-\:]?\s*(?:CNPJ)?[^\d]*(\d[\d\.\-/]{13,18}\d)'
+        r'(?:02|0Z|O2|2)\s*[\-\:]?\s*(?:CNPJ)?[^\d]*(\d[\d\.\-/]{13,18}\d)',
+        r'CNPJ[^\d]*(\d[\d\.\-/]{13,18}\d)[^\n]*PARANAPIACABA'
     ]
     
     for padrao in padroes_especificos:
@@ -171,7 +172,7 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
             if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo) and c_limpo != "06697670000195":
                 return c_limpo
 
-    # 2. Se não encontrou pela proximidade, faz a verificação na API para ver qual CNPJ é um Conselho/Escola pública
+    # 2. Caso não encontre por regex direto, consulta a API para identificar qual CNPJ pertence ao Conselho de Escola
     cnpjs_gerais = extrair_cnpjs_de_texto(texto)
     for c in cnpjs_gerais:
         if c == "06697670000195":
@@ -183,13 +184,14 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
 
     return ""
 
-# --- PROCESSAMENTO DE IMAGEM COM TESTE DE ROTAÇÕES ---
+# --- PROCESSAMENTO DE IMAGEM COM OSD + MULTI-ÂNGULO ---
 
 def processar_imagem_com_rotacao(imagem_pil: Image.Image) -> str:
     imagem_pil = ImageOps.exif_transpose(imagem_pil)
     
-    angulos = [270, 90, 0, 180]  # Prioriza 270° e 90° para documentos em orientação retrato/paisagem alterada
-    textos_extraidos = []
+    # Testamos todas as rotações para garantir extração completa sem perdas de blocos
+    angulos = [270, 90, 0, 180]
+    textos = []
 
     for angulo in angulos:
         img_rot = imagem_pil.rotate(angulo, expand=True) if angulo != 0 else imagem_pil
@@ -203,9 +205,10 @@ def processar_imagem_com_rotacao(imagem_pil: Image.Image) -> str:
         
         t1 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 6')
         t2 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 3')
-        textos_extraidos.append(t1 + "\n" + t2)
+        t3 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 11')
+        textos.extend([t1, t2, t3])
 
-    return "\n".join(textos_extraidos)
+    return "\n".join(textos)
 
 def ler_arquivo(uploaded_file) -> str:
     extensao = uploaded_file.name.split('.')[-1].lower()
@@ -319,7 +322,7 @@ if st.session_state.validado:
         cnpjs_para_exibir = []
         for c in cnpjs_encontrados:
             c_limpo = re.sub(r'\D', '', c)
-            # Desconsidera o CNPJ do FNDE padrão (06697670000195) e o CNPJ da Unidade Escolar
+            # Ignora CNPJ padrão do FNDE e o CNPJ atribuído à Unidade Escolar
             if c_limpo != "06697670000195" and c_limpo != cnpj_uex_limpo:
                 if c_limpo not in [re.sub(r'\D', '', x) for x in cnpjs_para_exibir]:
                     cnpjs_para_exibir.append(c)
