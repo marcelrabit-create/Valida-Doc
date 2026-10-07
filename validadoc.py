@@ -157,7 +157,7 @@ def consultar_receita_federal(cnpj: str) -> dict:
         
         time.sleep(1)
 
-    return {"erro": "A API pública de consulta está temporariamente indisponível para este CNPJ de filial. Tente novamente em instantes."}
+    return {"erro": "A API pública de consulta está temporariamente indisponível para este CNPJ. Tente novamente em instantes."}
 
 def formatar_cnpj(cnpj: str) -> str:
     c = re.sub(r'\D', '', str(cnpj))
@@ -277,15 +277,15 @@ def ler_arquivo(uploaded_file) -> str:
             imagem_original = Image.open(uploaded_file)
             imagem_otimizada = otimizar_imagem_para_ocr(imagem_original)
             
-            # 1. Leitura padrão (PSM padrão lida melhor com layouts genéricos e notas fiscais)
+            # 1. Leitura padrão
             t_padrao = pytesseract.image_to_string(imagem_otimizada, lang='por')
             texto_extraido += t_padrao + "\n"
             
-            # 2. Leitura tabular (PSM 6 para tabelas e formulários alinhados)
+            # 2. Leitura tabular (PSM 6)
             t_psm6 = pytesseract.image_to_string(imagem_otimizada, lang='por', config='--psm 6')
             texto_extraido += t_psm6 + "\n"
 
-            # 3. Rotações adicionais se a leitura direta encontrou menos de 3 CNPJs (Garante leitura de A, B e C)
+            # 3. Rotações adicionais se a leitura direta encontrou menos de 3 CNPJs
             if len(extrair_cnpjs_de_texto(texto_extraido)) < 3:
                 for angulo in [90, 180, 270]:
                     img_rot = imagem_otimizada.rotate(angulo, expand=True)
@@ -302,7 +302,6 @@ def ler_arquivo(uploaded_file) -> str:
                     if t:
                         texto_extraido += t + "\n"
             
-            # Se for PDF escaneado (sem texto vetorial)
             if not texto_extraido.strip():
                 uploaded_file.seek(0)
                 with pdfplumber.open(uploaded_file) as pdf:
@@ -368,23 +367,27 @@ if st.session_state.validado:
         st.write(f"**Razão Social:** {razao_social_uex}")
         st.write(f"**CNPJ:** {cnpj_formatado_uex}")
 
-    # 2º: VALIDAÇÃO NA RECEITA FEDERAL (DOS FORNECEDORES/PROPONENTES)
+    # 2º: VALIDAÇÃO NA RECEITA FEDERAL (APENAS PROPONENTES / FORNECEDORES)
     if st.session_state.tipo_doc != "Documento Genérico / Não Identificado":
         st.divider()
-        st.subheader("🔍 Validação na Receita Federal")
+        st.subheader("🔍 Validação na Receita Federal (Proponentes / Fornecedores)")
 
-        cnpjs_encontrados = extrair_cnpjs_de_texto(st.session_state.texto_processado)
-        
+        # Delimita a busca a partir do Bloco II para ignorar o Bloco I
+        texto_busca_fornecedores = st.session_state.texto_processado
+        if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços" and "BLOCO II" in st.session_state.texto_processado.upper():
+            texto_busca_fornecedores = st.session_state.texto_processado.upper().split("BLOCO II", 1)[1]
+
+        cnpjs_encontrados = extrair_cnpjs_de_texto(texto_busca_fornecedores)
         cnpj_uex_limpo = re.sub(r'\D', '', str(cnpj_uex)) if cnpj_uex else ""
 
-        # Remove da lista de fornecedores apenas a Prefeitura e o CNPJ específico extraído da UEx
+        # Descarta a Prefeitura e exclui explicitamente o CNPJ da UEx/Conselho de Escola
         cnpjs_para_exibir = [
             c for c in cnpjs_encontrados 
             if re.sub(r'\D', '', c) != "06697670000195" and (not cnpj_uex_limpo or re.sub(r'\D', '', c) != cnpj_uex_limpo)
         ]
 
         if not cnpjs_para_exibir:
-            st.warning("⚠ Nenhum CNPJ de fornecedor/emitente válido foi encontrado no arquivo anexado.")
+            st.warning("⚠ Nenhum CNPJ de fornecedor/proponente foi encontrado no Bloco II.")
         else:
             for cnpj in cnpjs_para_exibir:
                 dados = consultar_receita_federal(cnpj)
