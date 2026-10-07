@@ -3,7 +3,7 @@ import re
 import requests
 import pandas as pd
 import pdfplumber
-from PIL import Image, ImageEnhance, ImageOps
+from PIL import Image, ImageOps
 import pytesseract
 import cv2
 import numpy as np
@@ -129,35 +129,12 @@ def formatar_cnpj(cnpj: str) -> str:
     c = re.sub(r'\D', '', str(cnpj))
     return f"{c[:2]}.{c[2:5]}.{c[5:8]}/{c[8:12]}-{c[12:]}"
 
-# --- EXTRAÇÃO RIGOROSA DO CNPJ DA UNIDADE ESCOLAR (BLOCO I) ---
-
-def extrair_cnpj_unidade_escolar(texto: str) -> str:
-    texto_corrigido = corrigir_substituicoes_ocr(texto)
-    
-    # 1. Tenta por padrão de rótulo explícito (ex: "02 - CNPJ", "CNPJ D A UNIDADE", "UEX")
-    match = re.search(r'(?:02|0Z|O2|2|BLOCO I)[\s\-\:]*(?:CNPJ)?[^\d]*(\d[\d\.\-/]{13,18}\d)', texto_corrigido, re.IGNORECASE)
-    if match:
-        c_limpo = re.sub(r'\D', '', match.group(1))
-        if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo):
-            return c_limpo
-
-    # 2. Restringe a busca apenas às primeiras 1000 caracteres (Topo do Documento / Bloco I)
-    topo_texto = texto_corrigido[:1200]
-    cnpjs_topo = extrair_cnpjs_de_texto(topo_texto)
-    
-    # Ignora o CNPJ padrão do FNDE se estiver no topo
-    for c in cnpjs_topo:
-        if re.sub(r'\D', '', c) != "06697670000195":
-            return c
-        
-    return ""
-
 # --- EXTRAÇÃO GERAL DE CNPJS DA PÁGINA ---
 
 def extrair_cnpjs_de_texto(texto: str) -> list:
     cnpjs_validos = []
 
-    # Padronização de padrões numéricos com delimitadores flexíveis
+    # Extrai padrões formatados com delimitadores
     padrao_cnpj = r'\b[0-9OoDDIlLZSsGGB]{2}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[/\s1lI|]?[0-9OoDDIlLZSsGGB]{4}[-\s]?[0-9OoDDIlLZSsGGB]{2}\b'
     for c in re.findall(padrao_cnpj, texto):
         c_corrigido = corrigir_substituicoes_ocr(c)
@@ -165,7 +142,7 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
         if len(num) == 14 and validar_digitos_cnpj(num) and num not in cnpjs_validos:
             cnpjs_validos.append(num)
 
-    # Varredura em sequências contínuas de números
+    # Varredura secundária em sequências contínuas de números
     texto_limpo = corrigir_substituicoes_ocr(texto)
     apenas_numeros = re.sub(r'\D', ' ', texto_limpo)
     for bloco in apenas_numeros.split():
@@ -177,17 +154,58 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
 
     return cnpjs_validos
 
-# --- PREPROCESSAMENTO DE IMAGEM OCR ---
+# --- EXTRAÇÃO RIGOROSA E DIRETA DA UNIDADE ESCOLAR ---
 
-def otimizar_imagem(imagem_pil: Image.Image) -> Image.Image:
+def extrair_cnpj_unidade_escolar(texto: str) -> str:
+    texto_corrigido = corrigir_substituicoes_ocr(texto)
+    
+    # Busca por padrões próximos a rótulos específicos do Bloco I
+    padroes_rotulo = [
+        r'(?:02|0Z|O2|2)[\s\-\:]*(?:CNPJ)?[^\d]*(\d[\d\.\-/]{13,18}\d)',
+        r'CNPJ[^\d]*(\d[\d\.\-/]{13,18}\d)[^\n]*CONSELHO',
+        r'CONSELHO[^\n]*(\d[\d\.\-/]{13,18}\d)',
+        r'UEX[^\n]*(\d[\d\.\-/]{13,18}\d)'
+    ]
+    
+    for padrao in padroes_rotulo:
+        match = re.search(padrao, texto_corrigido, re.IGNORECASE)
+        if match:
+            c_limpo = re.sub(r'\D', '', match.group(1))
+            if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo) and c_limpo != "06697670000195":
+                return c_limpo
+
+    # Fallback: pega o primeiro CNPJ válido da folha que não seja o FNDE
+    cnpjs_gerais = extrair_cnpjs_de_texto(texto)
+    for c in cnpjs_gerais:
+        c_limpo = re.sub(r'\D', '', c)
+        if c_limpo != "06697670000195":
+            return c_limpo
+
+    return ""
+
+# --- TRATAMENTO E PROCESSAMENTO DE IMAGEM (DILATAÇÃO + OTSU) ---
+
+def preprocessar_imagem_ocr(imagem_pil: Image.Image) -> list:
+    """Prepara variações com resize (2x), Otsu e morfologia para aumentar acurácia de OCR em tabelas."""
     imagem_pil = ImageOps.exif_transpose(imagem_pil)
-    img_np = np.array(imagem_pil.convert('L'))
+    img_gray = cv2.cvtColor(np.array(imagem_pil), cv2.COLOR_RGB2GRAY)
     
-    # Equalização de Histograma CLAHE
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    img_clahe = clahe.apply(img_np)
+    # Redimensiona para dar nitidez às fontes pequenas de tabelas
+    h, w = img_gray.shape
+    img_resized = cv2.resize(img_gray, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
     
-    return Image.fromarray(img_clahe)
+    # Binarização de Otsu
+    _, img_otsu = cv2.threshold(img_resized, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    # CLAHE
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    img_clahe = clahe.apply(img_resized)
+
+    return [
+        Image.fromarray(img_resized),
+        Image.fromarray(img_otsu),
+        Image.fromarray(img_clahe)
+    ]
 
 def ler_arquivo(uploaded_file) -> str:
     extensao = uploaded_file.name.split('.')[-1].lower()
@@ -196,11 +214,11 @@ def ler_arquivo(uploaded_file) -> str:
     try:
         if extensao in ['jpg', 'jpeg', 'png']:
             imagem_original = Image.open(uploaded_file)
-            imagem_otimizada = otimizar_imagem(imagem_original)
+            variacoes = preprocessar_imagem_ocr(imagem_original)
             
-            # Passagens controladas de OCR
-            texto_acumulado.append(pytesseract.image_to_string(imagem_otimizada, lang='por', config='--psm 3'))
-            texto_acumulado.append(pytesseract.image_to_string(imagem_otimizada, lang='por', config='--psm 6'))
+            for img in variacoes:
+                texto_acumulado.append(pytesseract.image_to_string(img, lang='por', config='--psm 3'))
+                texto_acumulado.append(pytesseract.image_to_string(img, lang='por', config='--psm 6'))
 
         elif extensao == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
@@ -214,9 +232,10 @@ def ler_arquivo(uploaded_file) -> str:
                 with pdfplumber.open(uploaded_file) as pdf:
                     for pagina in pdf.pages:
                         img = pagina.to_image(resolution=300).original
-                        img_otim = otimizar_imagem(img)
-                        texto_acumulado.append(pytesseract.image_to_string(img_otim, lang='por', config='--psm 3'))
-                        texto_acumulado.append(pytesseract.image_to_string(img_otim, lang='por', config='--psm 6'))
+                        variacoes = preprocessar_imagem_ocr(img)
+                        for v in variacoes:
+                            texto_acumulado.append(pytesseract.image_to_string(v, lang='por', config='--psm 3'))
+                            texto_acumulado.append(pytesseract.image_to_string(v, lang='por', config='--psm 6'))
 
         elif extensao == 'txt':
             texto_acumulado.append(uploaded_file.read().decode('utf-8', errors='ignore'))
@@ -257,7 +276,7 @@ if not st.session_state.validado:
     )
 
     if arquivo is not None:
-        with st.spinner("Lendo e processando o documento..."):
+        with st.spinner("Processando o documento com visão computacional ampliada..."):
             st.session_state.texto_processado = ler_arquivo(arquivo)
             st.session_state.tipo_doc = identificar_tipo_documento(st.session_state.texto_processado)
             st.session_state.validado = True
@@ -298,7 +317,7 @@ if st.session_state.validado:
         cnpjs_encontrados = extrair_cnpjs_de_texto(st.session_state.texto_processado)
         cnpj_uex_limpo = re.sub(r'\D', '', str(cnpj_uex)) if cnpj_uex else ""
 
-        # Remove o CNPJ da Unidade Escolar e o do FNDE da lista de fornecedores
+        # Mantém na lista os proponentes/emitentes, excluindo apenas o FNDE e o da Unidade Escolar
         cnpjs_para_exibir = []
         for c in cnpjs_encontrados:
             c_limpo = re.sub(r'\D', '', c)
