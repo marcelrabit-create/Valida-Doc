@@ -60,7 +60,7 @@ def validar_digitos_cnpj(cnpj: str) -> bool:
 
     return cnpj[-2:] == digito1 + digito2
 
-# --- FUNÇÃO DE CLASSIFICAÇÃO DO DOCUMENTO ---
+# --- FUNÇÃO DE CLASSIFICAÇÃO DO DOCUMENTO (FLEXÍVEL) ---
 
 def identificar_tipo_documento(texto: str) -> str:
     """Classifica o documento com base em palavras-chave abrangentes encontradas no texto."""
@@ -109,11 +109,11 @@ def identificar_tipo_documento(texto: str) -> str:
     else:
         return "Documento Genérico / Não Identificado"
 
-# --- CONSULTA À RECEITA FEDERAL ---
+# --- CONSULTA À RECEITA FEDERAL COM MÚLTIPLAS APIS DE CONTINGÊNCIA ---
 
 @st.cache_data(ttl=3600)
 def consultar_receita_federal(cnpj: str) -> dict:
-    """Consulta múltiplas APIs públicas de CNPJ em cascata."""
+    """Consulta múltiplas APIs públicas de CNPJ em cascata para evitar falhas de instabilidade."""
     cnpj_limpo = re.sub(r'\D', '', str(cnpj))
     
     endpoints = [
@@ -156,7 +156,7 @@ def consultar_receita_federal(cnpj: str) -> dict:
         
         time.sleep(1)
 
-    return {"erro": "A API pública de consulta está temporariamente indisponível para este CNPJ. Tente novamente em instantes."}
+    return {"erro": "A API pública de consulta está temporariamente indisponível para este CNPJ de filial. Tente novamente em instantes."}
 
 def formatar_cnpj(cnpj: str) -> str:
     c = re.sub(r'\D', '', str(cnpj))
@@ -191,20 +191,17 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
 # --- PRÉ-PROCESSAMENTO E TRATAMENTO DE TEXTO OCR ---
 
 def otimizar_imagem_para_ocr(imagem_pil: Image.Image) -> Image.Image:
-    """Redimensiona e aplica equalização adaptativa (CLAHE) para remover sombras laterais."""
+    """Redimensiona imagens muito grandes e melhora o contraste para acelerar o OCR."""
     imagem_pil = ImageOps.exif_transpose(imagem_pil)
     
+    # Redimenciona se a largura ou altura ultrapassar 2000px
     max_dim = 2000
     if max(imagem_pil.size) > max_dim:
         imagem_pil.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
         
-    img_np = np.array(imagem_pil.convert('L'))
-    
-    # CLAHE para suavizar sombras na borda da imagem
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    img_equalizada = clahe.apply(img_np)
-    
-    return Image.fromarray(img_equalizada)
+    img_cinza = imagem_pil.convert('L')
+    enhancer = ImageEnhance.Contrast(img_cinza)
+    return enhancer.enhance(2.0)
 
 def corrigir_substituicoes_ocr(string_cand: str) -> str:
     mapeamento = {
@@ -238,16 +235,6 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
 
     return list(cnpjs_validos)
 
-def extrair_proponentes_bloco_ii(texto: str) -> list:
-    """Isola estritamente o BLOCO II antes de extrair os CNPJs."""
-    texto_upper = texto.upper()
-    if "BLOCO II" in texto_upper:
-        bloco_ii = texto_upper.split("BLOCO II")[1]
-        if "BLOCO III" in bloco_ii:
-            bloco_ii = bloco_ii.split("BLOCO III")[0]
-        return extrair_cnpjs_de_texto(bloco_ii)
-    return extrair_cnpjs_de_texto(texto)
-
 def validar_consolidacao_precos(texto: str) -> list:
     """Verifica regras de preenchimento dos Blocos III e IV para Consolidação de Preços."""
     erros = []
@@ -278,20 +265,23 @@ def ler_arquivo(uploaded_file) -> str:
             imagem_original = Image.open(uploaded_file)
             imagem_otimizada = otimizar_imagem_para_ocr(imagem_original)
             
-            # 1. Leitura direta no PSM 6
+            # 1. Tenta a leitura direta na orientação ajustada pelo EXIF (PSM 6 é ideal para tabelas/documentos)
             texto_direto = pytesseract.image_to_string(imagem_otimizada, lang='por', config='--psm 6')
             cnpjs = extrair_cnpjs_de_texto(texto_direto)
 
+            # Critério de saída rápida (Early Exit): se já encontrou CNPJ válido ou palavras de consolidação, encerra
             if len(cnpjs) >= 2 or "CONSOLIDAÇÃO" in texto_direto.upper() or "PDDE" in texto_direto.upper():
                 return texto_direto
 
             texto_extraido += texto_direto + "\n"
 
-            # 2. Rotação em outros ângulos se não capturar suficiente
+            # 2. Se a leitura direta não foi conclusiva, testa os outros ângulos (90°, 180°, 270°)
             for angulo in [90, 180, 270]:
                 img_rot = imagem_otimizada.rotate(angulo, expand=True)
                 t = pytesseract.image_to_string(img_rot, lang='por', config='--psm 6')
                 texto_extraido += t + "\n"
+                
+                # Se encontrar informações suficientes em outro ângulo, encerra o loop de rotação
                 if len(extrair_cnpjs_de_texto(t)) >= 2:
                     break
 
@@ -371,20 +361,14 @@ if st.session_state.validado:
         st.divider()
         st.subheader("🔍 Validação na Receita Federal")
 
-        if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
-            cnpjs_encontrados = extrair_proponentes_bloco_ii(st.session_state.texto_processado)
-        else:
-            cnpjs_encontrados = extrair_cnpjs_de_texto(st.session_state.texto_processado)
+        cnpjs_encontrados = extrair_cnpjs_de_texto(st.session_state.texto_processado)
         
         cnpj_uex_limpo = re.sub(r'\D', '', str(cnpj_uex)) if cnpj_uex else ""
 
-        # Remove o CNPJ padrão do cabeçalho do FNDE e evita duplicar a própria escola se capturada por engano
-        cnpjs_para_exibir = []
-        for c in cnpjs_encontrados:
-            c_limpo = re.sub(r'\D', '', c)
-            if c_limpo != "06697670000195" and (not cnpj_uex_limpo or c_limpo != cnpj_uex_limpo):
-                if c_limpo not in [re.sub(r'\D', '', x) for x in cnpjs_para_exibir]:
-                    cnpjs_para_exibir.append(c)
+        cnpjs_para_exibir = [
+            c for c in cnpjs_encontrados 
+            if re.sub(r'\D', '', c) != "06697670000195" and (not cnpj_uex_limpo or re.sub(r'\D', '', c) != cnpj_uex_limpo)
+        ]
 
         if not cnpjs_para_exibir:
             st.warning("⚠ Nenhum CNPJ de fornecedor/emitente válido foi encontrado no arquivo anexado.")
@@ -398,6 +382,10 @@ if st.session_state.validado:
                         st.error(f"❌ **CNPJ {cnpj_formatado}:** {dados['erro']}")
                 else:
                     razao_social_oficial = dados.get("razao_social", "N/A")
+
+                    if "CONSELHO DE ESCOLA" in razao_social_oficial.upper():
+                        continue
+
                     situacao = dados.get("descricao_situacao_cadastral", "DESCONHECIDA")
                     data_situacao = dados.get("data_situacao", "Não informada")
                     nome_fantasia = dados.get("nome_fantasia") or "Não informado"
