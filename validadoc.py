@@ -6,6 +6,8 @@ import pdfplumber
 from PIL import Image, ImageEnhance
 import pytesseract
 import time
+import cv2
+import numpy as np
 
 # Configuração da página
 st.set_page_config(page_title="Validador de Documentos", page_icon="📋", layout="wide")
@@ -186,47 +188,18 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
             
     return ""
 
-# --- VALIDAÇÕES ESPECÍFICAS PARA CONSOLIDAÇÃO DE PREÇOS ---
+# --- PRÉ-PROCESSAMENTO E TRATAMENTO DE TEXTO OCR ---
 
-def validar_consolidacao_precos(texto: str) -> list:
-    """Verifica regras de preenchimento dos Blocos III e IV para Consolidação de Preços."""
-    erros = []
-    texto_upper = texto.upper()
-
-    bloco_iii_texto = ""
-    bloco_iv_texto = ""
-
-    if "BLOCO III" in texto_upper:
-        partes = texto_upper.split("BLOCO III")
-        resto = partes[1]
-        if "BLOCO IV" in resto:
-            bloco_iii_texto = resto.split("BLOCO IV")[0]
-            bloco_iv_texto = resto.split("BLOCO IV")[1]
-        else:
-            bloco_iii_texto = resto
-    elif "BLOCO IV" in texto_upper:
-        bloco_iv_texto = texto_upper.split("BLOCO IV")[1]
-
-    bloco_iv_limpo = re.sub(r'\s+', ' ', bloco_iv_texto).strip()
-    
-    if not bloco_iv_limpo or ("14" in bloco_iv_limpo and len(bloco_iv_limpo.replace("14", "").strip()) < 5):
-        erros.append("Faltam itens de menor valor.")
-
-    itens_bloco_iii = set(re.findall(r'(?:ITEM\s*0?5|0?5[\.\-\º\ª\s])\s*([0-9A-Z\-\/\,\.]+)', bloco_iii_texto))
-    itens_bloco_iv = set(re.findall(r'(?:ITEM\s*1?4|1?4[\.\-\º\ª\s])\s*([0-9A-Z\-\/\,\.]+)', bloco_iv_texto))
-
-    if bloco_iii_texto and bloco_iv_texto:
-        if itens_bloco_iii and itens_bloco_iv and itens_bloco_iii != itens_bloco_iv:
-            erros.append("Divergência entre os itens do bloco III e bloco IV.")
-
-    return erros
-
-# --- EXTRAÇÃO DE TEXTO E CORREÇÃO DE ORIENTAÇÃO DE IMAGENS ---
+def pre_processar_imagem_ocr(imagem_pil):
+    """Aplica binarização e limpeza de imagem para melhorar o OCR de textos pequenos/acinzentados."""
+    img_array = np.array(imagem_pil.convert('L'))
+    _, img_bin = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return Image.fromarray(img_bin)
 
 def corrigir_substituicoes_ocr(string_cand: str) -> str:
     mapeamento = {
         'O': '0', 'o': '0', 'D': '0',
-        'I': '1', 'l': '1', 'L': '1',
+        'I': '1', 'l': '1', 'L': '1', '|': '1',
         'Z': '2',
         'S': '5', 's': '5',
         'G': '6',
@@ -237,13 +210,15 @@ def corrigir_substituicoes_ocr(string_cand: str) -> str:
 def extrair_cnpjs_de_texto(texto: str) -> list:
     cnpjs_validos = set()
 
-    padrao_cnpj = r'\b[0-9OoDDIlLZSsGGB]{2}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[/\s]?[0-9OoDDIlLZSsGGB]{4}[-\s]?[0-9OoDDIlLZSsGGB]{2}\b'
+    # Busca padrões comuns de CNPJ permitindo correções de letras confundidas pelo OCR
+    padrao_cnpj = r'\b[0-9OoDDIlLZSsGGB]{2}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[/\s1lI|]?[0-9OoDDIlLZSsGGB]{4}[-\s]?[0-9OoDDIlLZSsGGB]{2}\b'
     for c in re.findall(padrao_cnpj, texto):
         c_corrigido = corrigir_substituicoes_ocr(c)
         num = re.sub(r'\D', '', c_corrigido)
         if len(num) == 14 and validar_digitos_cnpj(num):
             cnpjs_validos.add(num)
 
+    # Busca secundária por qualquer sequência de 14 dígitos válidos
     texto_limpo = corrigir_substituicoes_ocr(texto)
     apenas_numeros = re.sub(r'\D', ' ', texto_limpo)
     for bloco in apenas_numeros.split():
@@ -255,6 +230,27 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
 
     return list(cnpjs_validos)
 
+def validar_consolidacao_precos(texto: str) -> list:
+    """Verifica regras de preenchimento dos Blocos III e IV para Consolidação de Preços."""
+    erros = []
+    texto_upper = texto.upper()
+
+    # Verifica presença do Bloco IV no texto
+    if "BLOCO IV" not in texto_upper and "APURAÇÃO" not in texto_upper and "APURACAO" not in texto_upper:
+        erros.append("Bloco IV (Apuração das Propostas) não identificado no documento.")
+        return erros
+
+    # Verifica se há indicação de item de menor valor (Proponente A, B ou C)
+    tem_proponente_vencedor = False
+    if re.search(r'PROPONENTE\s*\([ABC]\)\s*[\:\-\s]*[1-9]', texto_upper) or "14 - ITENS DE MENOR VALOR" in texto_upper or "PROPONENTE (A) 1" in texto_upper or "PROPONENTE (A)" in texto_upper:
+        tem_proponente_vencedor = True
+
+    if not tem_proponente_vencedor:
+        if not re.search(r'(?:PROPONENTE|ITEM)\s*[A-C1-9]', texto_upper):
+            erros.append("Faltam itens de menor valor no Bloco IV.")
+
+    return erros
+
 def ler_arquivo(uploaded_file) -> str:
     extensao = uploaded_file.name.split('.')[-1].lower()
     texto_extraido = ""
@@ -263,17 +259,21 @@ def ler_arquivo(uploaded_file) -> str:
         if extensao in ['jpg', 'jpeg', 'png']:
             imagem = Image.open(uploaded_file)
             
-            # Testa todos os 4 ângulos cardinais (0º, 90º, 180º, 270º) para garantir que imagens deitadas ou invertidas sejam lidas perfeitamente
+            # Testa todos os 4 ângulos cardinais (0º, 90º, 180º, 270º) com e sem binarização Otsu
             for angulo in [0, 90, 180, 270]:
-                img_rotacionada = imagem.rotate(angulo, expand=True) if angulo != 0 else imagem
+                img_rot = imagem.rotate(angulo, expand=True) if angulo != 0 else imagem
                 
-                texto_extraido += pytesseract.image_to_string(img_rotacionada, lang='por') + "\n"
-                
-                img_cinza = img_rotacionada.convert('L')
+                # Leitura normal em níveis de cinza com contraste aumentado
+                img_cinza = img_rot.convert('L')
                 enhancer = ImageEnhance.Contrast(img_cinza)
                 img_contraste = enhancer.enhance(2.5)
                 texto_extraido += pytesseract.image_to_string(img_contraste, lang='por') + "\n"
                 texto_extraido += pytesseract.image_to_string(img_contraste, lang='por', config='--psm 6') + "\n"
+
+                # Leitura com binarização OpenCV (Otsu) para tratar textos/CNPJs fracos ou acinzentados
+                img_bin = pre_processar_imagem_ocr(img_rot)
+                texto_extraido += pytesseract.image_to_string(img_bin, lang='por') + "\n"
+                texto_extraido += pytesseract.image_to_string(img_bin, lang='por', config='--psm 6') + "\n"
 
         elif extensao == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
@@ -287,10 +287,8 @@ def ler_arquivo(uploaded_file) -> str:
                 with pdfplumber.open(uploaded_file) as pdf:
                     for pagina in pdf.pages:
                         img = pagina.to_image().original
-                        img_cinza = img.convert('L')
-                        enhancer = ImageEnhance.Contrast(img_cinza)
-                        img_contraste = enhancer.enhance(2.5)
-                        texto_extraido += pytesseract.image_to_string(img_contraste, lang='por') + "\n"
+                        img_bin = pre_processar_imagem_ocr(img)
+                        texto_extraido += pytesseract.image_to_string(img_bin, lang='por') + "\n"
 
         elif extensao == 'txt':
             texto_extraido = uploaded_file.read().decode('utf-8', errors='ignore')
@@ -363,7 +361,7 @@ if st.session_state.validado:
         ]
 
         if not cnpjs_para_exibir:
-            st.warning("⚠️️ Nenhum CNPJ de fornecedor/emitente válido foi encontrado no arquivo anexado.")
+            st.warning("⚠ Nenhum CNPJ de fornecedor/emitente válido foi encontrado no arquivo anexado.")
         else:
             for cnpj in cnpjs_para_exibir:
                 dados = consultar_receita_federal(cnpj)
