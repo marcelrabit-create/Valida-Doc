@@ -156,16 +156,19 @@ def consultar_receita_federal(cnpj: str) -> dict:
         
         time.sleep(1)
 
-    return {"erro": "A API pública de consulta está temporariamente indisponível para este CNPJ de filial. Tente novamente em instantes."}
+    return {"erro": "A API pública de consulta está temporariamente indisponível para este CNPJ. Tente novamente em instantes."}
 
 def formatar_cnpj(cnpj: str) -> str:
     c = re.sub(r'\D', '', str(cnpj))
     return f"{c[:2]}.{c[2:5]}.{c[5:8]}/{c[8:12]}-{c[12:]}"
 
-# --- EXTRAÇÃO ESTRITA DO CNPJ DO BLOCO I (UNIDADE ESCOLAR) ---
+# --- EXTRAÇÃO FLEXÍVEL E GARANTIDA DO CNPJ DO BLOCO I (UNIDADE ESCOLAR) ---
 
 def extrair_cnpj_unidade_escolar(texto: str) -> str:
     """Extrai o CNPJ estritamente contido no Bloco I (Identificação da Unidade Executora Própria)."""
+    if not texto:
+        return ""
+        
     texto_upper = texto.upper()
     
     bloco_i_texto = texto_upper
@@ -178,30 +181,43 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
         if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo):
             return c_limpo
 
-    padrao_cnpj = r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b'
-    cnpjs = re.findall(padrao_cnpj, bloco_i_texto)
-    
-    for c in cnpjs:
-        c_limpo = re.sub(r'\D', '', c)
-        if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo):
-            return c_limpo
-            
+    cnpjs_bloco_i = extrair_cnpjs_de_texto(bloco_i_texto)
+    if cnpjs_bloco_i:
+        return cnpjs_bloco_i[0]
+
+    todos_cnpjs = extrair_cnpjs_de_texto(texto)
+    if todos_cnpjs:
+        return todos_cnpjs[0]
+
     return ""
 
-# --- PRÉ-PROCESSAMENTO E TRATAMENTO DE TEXTO OCR ---
+# --- PRÉ-PROCESSAMENTO E TRATAMENTO DE TEXTO OCR (MELHORADO COM OPENCV) ---
 
 def otimizar_imagem_para_ocr(imagem_pil: Image.Image) -> Image.Image:
-    """Redimensiona imagens muito grandes e melhora o contraste para acelerar o OCR."""
-    imagem_pil = ImageOps.exif_transpose(imagem_pil)
+    """Aplica binarização adaptativa via OpenCV para remover sombras de fotos e melhorar tabelas."""
+    try:
+        imagem_pil = ImageOps.exif_transpose(imagem_pil)
+    except Exception:
+        pass
     
-    # Redimenciona se a largura ou altura ultrapassar 2000px
-    max_dim = 2000
-    if max(imagem_pil.size) > max_dim:
-        imagem_pil.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
-        
-    img_cinza = imagem_pil.convert('L')
-    enhancer = ImageEnhance.Contrast(img_cinza)
-    return enhancer.enhance(2.0)
+    img_np = np.array(imagem_pil)
+    
+    if len(img_np.shape) == 3:
+        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+    else:
+        gray = img_np
+
+    max_dim = 2200
+    h, w = gray.shape[:2]
+    if max(h, w) > max_dim:
+        scale = max_dim / float(max(h, w))
+        gray = cv2.resize(gray, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+
+    binaria = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21, 11
+    )
+
+    return Image.fromarray(binaria)
 
 def corrigir_substituicoes_ocr(string_cand: str) -> str:
     mapeamento = {
@@ -215,14 +231,18 @@ def corrigir_substituicoes_ocr(string_cand: str) -> str:
     return "".join([mapeamento.get(char, char) for char in string_cand])
 
 def extrair_cnpjs_de_texto(texto: str) -> list:
-    cnpjs_validos = set()
+    if not texto:
+        return []
+        
+    cnpjs_validos = []
 
     padrao_cnpj = r'\b[0-9OoDDIlLZSsGGB]{2}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[/\s1lI|]?[0-9OoDDIlLZSsGGB]{4}[-\s]?[0-9OoDDIlLZSsGGB]{2}\b'
     for c in re.findall(padrao_cnpj, texto):
         c_corrigido = corrigir_substituicoes_ocr(c)
         num = re.sub(r'\D', '', c_corrigido)
         if len(num) == 14 and validar_digitos_cnpj(num):
-            cnpjs_validos.add(num)
+            if num not in cnpjs_validos:
+                cnpjs_validos.append(num)
 
     texto_limpo = corrigir_substituicoes_ocr(texto)
     apenas_numeros = re.sub(r'\D', ' ', texto_limpo)
@@ -231,12 +251,16 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
             for i in range(len(bloco) - 13):
                 cand = bloco[i:i+14]
                 if len(cand) == 14 and validar_digitos_cnpj(cand):
-                    cnpjs_validos.add(cand)
+                    if cand not in cnpjs_validos:
+                        cnpjs_validos.append(cand)
 
-    return list(cnpjs_validos)
+    return cnpjs_validos
 
 def validar_consolidacao_precos(texto: str) -> list:
     """Verifica regras de preenchimento dos Blocos III e IV para Consolidação de Preços."""
+    if not texto:
+        return ["Texto não identificado no arquivo."]
+        
     erros = []
     texto_upper = texto.upper()
 
@@ -254,7 +278,7 @@ def validar_consolidacao_precos(texto: str) -> list:
 
     return erros
 
-# --- FUNÇÃO DE LEITURA OTIMIZADA ---
+# --- FUNÇÃO DE LEITURA COMPLETA (SEM EARLY EXIT PRECOCE) ---
 
 def ler_arquivo(uploaded_file) -> str:
     extensao = uploaded_file.name.split('.')[-1].lower()
@@ -265,25 +289,25 @@ def ler_arquivo(uploaded_file) -> str:
             imagem_original = Image.open(uploaded_file)
             imagem_otimizada = otimizar_imagem_para_ocr(imagem_original)
             
-            # 1. Tenta a leitura direta na orientação ajustada pelo EXIF (PSM 6 é ideal para tabelas/documentos)
-            texto_direto = pytesseract.image_to_string(imagem_otimizada, lang='por', config='--psm 6')
-            cnpjs = extrair_cnpjs_de_texto(texto_direto)
+            configs = ['--psm 6', '--psm 3', '--psm 11']
+            
+            for config in configs:
+                texto_tentativa = pytesseract.image_to_string(imagem_otimizada, lang='por', config=config)
+                cnpjs = extrair_cnpjs_de_texto(texto_tentativa)
+                
+                # Exige encontrar pelo menos 3 CNPJs (UEx + 2 proponentes no mínimo) antes de parar a leitura
+                if len(cnpjs) >= 3:
+                    return texto_tentativa
+                
+                if len(texto_tentativa) > len(texto_extraido):
+                    texto_extraido = texto_tentativa
 
-            # Critério de saída rápida (Early Exit): se já encontrou CNPJ válido ou palavras de consolidação, encerra
-            if len(cnpjs) >= 2 or "CONSOLIDAÇÃO" in texto_direto.upper() or "PDDE" in texto_direto.upper():
-                return texto_direto
-
-            texto_extraido += texto_direto + "\n"
-
-            # 2. Se a leitura direta não foi conclusiva, testa os outros ângulos (90°, 180°, 270°)
+            # Se a leitura inicial não for conclusiva, tenta a rotação
             for angulo in [90, 180, 270]:
                 img_rot = imagem_otimizada.rotate(angulo, expand=True)
-                t = pytesseract.image_to_string(img_rot, lang='por', config='--psm 6')
-                texto_extraido += t + "\n"
-                
-                # Se encontrar informações suficientes em outro ângulo, encerra o loop de rotação
-                if len(extrair_cnpjs_de_texto(t)) >= 2:
-                    break
+                t = pytesseract.image_to_string(img_rot, lang='por', config='--psm 3')
+                if len(extrair_cnpjs_de_texto(t)) > len(extrair_cnpjs_de_texto(texto_extraido)):
+                    texto_extraido = t
 
         elif extensao == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
@@ -298,7 +322,7 @@ def ler_arquivo(uploaded_file) -> str:
                     for pagina in pdf.pages:
                         img = pagina.to_image().original
                         img_otim = otimizar_imagem_para_ocr(img)
-                        texto_extraido += pytesseract.image_to_string(img_otim, lang='por', config='--psm 6') + "\n"
+                        texto_extraido += pytesseract.image_to_string(img_otim, lang='por', config='--psm 3') + "\n"
 
         elif extensao == 'txt':
             texto_extraido = uploaded_file.read().decode('utf-8', errors='ignore')
@@ -338,7 +362,7 @@ if st.session_state.validado:
     else:
         st.info(f"**{st.session_state.tipo_doc}**")
 
-    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (APENAS DO BLOCO I)
+    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (EXIBIDO NO TOPO)
     cnpj_uex = ""
     if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
         st.divider()
@@ -356,22 +380,38 @@ if st.session_state.validado:
         st.write(f"**Razão Social:** {razao_social_uex}")
         st.write(f"**CNPJ:** {cnpj_formatado_uex}")
 
-    # 2º: VALIDAÇÃO NA RECEITA FEDERAL (DOS FORNECEDORES/PROPONENTES)
+    # 2º: VALIDAÇÃO NA RECEITA FEDERAL (APENAS PROPONENTES / FORNECEDORES)
     if st.session_state.tipo_doc != "Documento Genérico / Não Identificado":
         st.divider()
-        st.subheader("🔍 Validação na Receita Federal")
+        st.subheader("🔍 Validação na Receita Federal (Proponentes / Fornecedores)")
 
         cnpjs_encontrados = extrair_cnpjs_de_texto(st.session_state.texto_processado)
-        
         cnpj_uex_limpo = re.sub(r'\D', '', str(cnpj_uex)) if cnpj_uex else ""
 
-        cnpjs_para_exibir = [
-            c for c in cnpjs_encontrados 
-            if re.sub(r'\D', '', c) != "06697670000195" and (not cnpj_uex_limpo or re.sub(r'\D', '', c) != cnpj_uex_limpo)
-        ]
+        cnpjs_para_exibir = []
+        for c in cnpjs_encontrados:
+            c_limpo = re.sub(r'\D', '', c)
+            
+            # Descarta CNPJ da Prefeitura
+            if c_limpo == "06697670000195":
+                continue
+                
+            # Descarta o CNPJ da UEx/Escola capturado no Bloco I
+            if cnpj_uex_limpo and c_limpo == cnpj_uex_limpo:
+                continue
+                
+            # Checagem secundária para filtrar a escola caso o nome social contenha o padrão do Conselho
+            dados_temp = consultar_receita_federal(c_limpo)
+            razao_temp = dados_temp.get("razao_social", "").upper() if isinstance(dados_temp, dict) else ""
+            if "CONSELHO DE ESCOLA" in razao_temp or "ASSOCIACAO DE PAIS" in razao_temp or "ASSOCIAÇÃO DE PAIS" in razao_temp:
+                if not cnpj_uex:
+                    cnpj_uex = c_limpo
+                continue
+                
+            cnpjs_para_exibir.append(c_limpo)
 
         if not cnpjs_para_exibir:
-            st.warning("⚠ Nenhum CNPJ de fornecedor/emitente válido foi encontrado no arquivo anexado.")
+            st.warning("⚠ Nenhum CNPJ de fornecedor/proponente foi encontrado no documento.")
         else:
             for cnpj in cnpjs_para_exibir:
                 dados = consultar_receita_federal(cnpj)
@@ -382,17 +422,13 @@ if st.session_state.validado:
                         st.error(f"❌ **CNPJ {cnpj_formatado}:** {dados['erro']}")
                 else:
                     razao_social_oficial = dados.get("razao_social", "N/A")
-
-                    if "CONSELHO DE ESCOLA" in razao_social_oficial.upper():
-                        continue
-
                     situacao = dados.get("descricao_situacao_cadastral", "DESCONHECIDA")
                     data_situacao = dados.get("data_situacao", "Não informada")
                     nome_fantasia = dados.get("nome_fantasia") or "Não informado"
                     uf = dados.get("uf", "")
                     municipio = dados.get("municipio", "")
 
-                    with st.expander(f"CNPJ: {cnpj_formatado}", expanded=True):
+                    with st.expander(f"CNPJ: {cnpj_formatado} - {razao_social_oficial}", expanded=True):
                         if situacao.upper() == "ATIVA":
                             st.success(f"**Situação Cadastral:** {situacao}")
                         else:
