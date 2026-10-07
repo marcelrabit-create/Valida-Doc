@@ -5,7 +5,6 @@ import pandas as pd
 import pdfplumber
 from PIL import Image, ImageEnhance, ImageOps
 import pytesseract
-import time
 import cv2
 import numpy as np
 
@@ -135,14 +134,12 @@ def formatar_cnpj(cnpj: str) -> str:
 def extrair_cnpj_unidade_escolar(texto: str) -> str:
     texto_corrigido = corrigir_substituicoes_ocr(texto)
     
-    # Procura por padrões como "02 - CNPJ" ou "CNPJ:" no início do documento
     match = re.search(r'(?:02|0Z|O2|2)\s*[\-\:]?\s*CNPJ[^\d]*(\d[\d\.\-/]{13,18}\d)', texto_corrigido, re.IGNORECASE)
     if match:
         c_limpo = re.sub(r'\D', '', match.group(1))
         if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo):
             return c_limpo
 
-    # Fallback: Varre todos os CNPJs válidos e pega o primeiro (Geralmente a UEx no Bloco I)
     cnpjs = extrair_cnpjs_de_texto(texto)
     if cnpjs:
         return cnpjs[0]
@@ -153,8 +150,8 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
 
 def extrair_cnpjs_de_texto(texto: str) -> list:
     cnpjs_validos = []
-    
-    # Tenta extrair com padrões com e sem pontuação
+
+    # Extrai padrões formatados com pontuação flexível
     padrao_cnpj = r'\b[0-9OoDDIlLZSsGGB]{2}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[/\s1lI|]?[0-9OoDDIlLZSsGGB]{4}[-\s]?[0-9OoDDIlLZSsGGB]{2}\b'
     for c in re.findall(padrao_cnpj, texto):
         c_corrigido = corrigir_substituicoes_ocr(c)
@@ -162,7 +159,7 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
         if len(num) == 14 and validar_digitos_cnpj(num) and num not in cnpjs_validos:
             cnpjs_validos.append(num)
 
-    # Varredura secundária por sequências numéricas de 14 dígitos
+    # Varredura secundária em sequências contínuas de dígitos
     texto_limpo = corrigir_substituicoes_ocr(texto)
     apenas_numeros = re.sub(r'\D', ' ', texto_limpo)
     for bloco in apenas_numeros.split():
@@ -174,66 +171,75 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
 
     return cnpjs_validos
 
-# --- PROCESSAMENTO DE IMAGEM OCR COMPLETO ---
+# --- PROCESSAMENTO AVANÇADO DE IMAGEM COM BINARIZAÇÃO DUPLEX ---
 
-def otimizar_imagem_para_ocr(imagem_pil: Image.Image) -> Image.Image:
+def gerar_variacoes_imagem(imagem_pil: Image.Image) -> list:
+    """Gera versões preprocessadas da imagem (Escala de Cinzentos, CLAHE, Binarização Adaptativa e Otsu)."""
     imagem_pil = ImageOps.exif_transpose(imagem_pil)
     img_np = np.array(imagem_pil.convert('L'))
     
-    # Equalização Adaptativa de Histograma (CLAHE) para balancear a sombra da margem esquerda
+    # 1. CLAHE (Equalização de Histograma)
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    img_equalizada = clahe.apply(img_np)
+    img_clahe = clahe.apply(img_np)
     
-    # Suavização suave para reduzir ruído de escaneamento
-    img_blur = cv2.GaussianBlur(img_equalizada, (3, 3), 0)
+    # 2. Binarização Adaptativa (Aumenta o contraste das tabelas e do texto pequeno)
+    img_thresh = cv2.adaptiveThreshold(
+        img_clahe, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 21, 11
+    )
     
-    return Image.fromarray(img_blur)
+    # 3. Limiarização de Otsu
+    _, img_otsu = cv2.threshold(img_clahe, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    return [
+        Image.fromarray(img_clahe),
+        Image.fromarray(img_thresh),
+        Image.fromarray(img_otsu)
+    ]
 
 def ler_arquivo(uploaded_file) -> str:
     extensao = uploaded_file.name.split('.')[-1].lower()
-    texto_completo = ""
+    texto_acumulado = []
 
     try:
         if extensao in ['jpg', 'jpeg', 'png']:
             imagem_original = Image.open(uploaded_file)
-            imagem_otimizada = otimizar_imagem_para_ocr(imagem_original)
+            variacoes = gerar_variacoes_imagem(imagem_original)
             
-            # Passagem 1: Leitura Automática Geral (PSM 3)
-            txt_psm3 = pytesseract.image_to_string(imagem_otimizada, lang='por', config='--psm 3')
-            
-            # Passagem 2: Leitura Sem Estrutura Rígida (PSM 11) - Ideal para tabelas com sombras
-            txt_psm11 = pytesseract.image_to_string(imagem_otimizada, lang='por', config='--psm 11')
-            
-            texto_completo = txt_psm3 + "\n" + txt_psm11
+            # Passagens cruzadas com diferentes PSMs para capturar textos em tabelas estreitas
+            for img in variacoes:
+                texto_acumulado.append(pytesseract.image_to_string(img, lang='por', config='--psm 3'))
+                texto_acumulado.append(pytesseract.image_to_string(img, lang='por', config='--psm 6'))
+                texto_acumulado.append(pytesseract.image_to_string(img, lang='por', config='--psm 11'))
 
         elif extensao == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
                 for pagina in pdf.pages:
                     t = pagina.extract_text()
                     if t:
-                        texto_completo += t + "\n"
+                        texto_acumulado.append(t)
             
-            if not texto_completo.strip():
+            if not texto_acumulado:
                 uploaded_file.seek(0)
                 with pdfplumber.open(uploaded_file) as pdf:
                     for pagina in pdf.pages:
                         img = pagina.to_image(resolution=300).original
-                        img_otim = otimizar_imagem_para_ocr(img)
-                        texto_completo += pytesseract.image_to_string(img_otim, lang='por', config='--psm 3') + "\n"
-                        texto_completo += pytesseract.image_to_string(img_otim, lang='por', config='--psm 11') + "\n"
+                        variacoes = gerar_variacoes_imagem(img)
+                        for v in variacoes:
+                            texto_acumulado.append(pytesseract.image_to_string(v, lang='por', config='--psm 3'))
+                            texto_acumulado.append(pytesseract.image_to_string(v, lang='por', config='--psm 11'))
 
         elif extensao == 'txt':
-            texto_completo = uploaded_file.read().decode('utf-8', errors='ignore')
+            texto_acumulado.append(uploaded_file.read().decode('utf-8', errors='ignore'))
 
         elif extensao in ['xls', 'xlsm', 'xlsx']:
             df_dict = pd.read_excel(uploaded_file, sheet_name=None)
             for _, aba in df_dict.items():
-                texto_completo += f" {aba.to_string()} "
+                texto_acumulado.append(aba.to_string())
 
     except Exception as e:
         st.error(f"Erro ao processar o arquivo: {e}")
 
-    return texto_completo
+    return "\n".join(texto_acumulado)
 
 # --- VALIDAÇÃO DO BLOCO IV ---
 
@@ -241,7 +247,6 @@ def validar_consolidacao_precos(texto: str) -> list:
     erros = []
     texto_upper = texto.upper()
 
-    # Verifica se existem indicativos de apuração de proposta (valores, itens ou indicações de menor valor)
     tem_itens = any(k in texto_upper for k in [
         "MENOR VALOR", "ITENS DE MENOR", "PROPONENTE (A)", "PROPONENTE (B)", 
         "PROPONENTE (C)", "APURAÇÃO", "APURACAO", "VENCEDOR"
@@ -262,7 +267,7 @@ if not st.session_state.validado:
     )
 
     if arquivo is not None:
-        with st.spinner("Lendo e processando o documento com OCR adaptativo..."):
+        with st.spinner("Lendo e processando o documento com binarização adaptativa e multi-PSM..."):
             st.session_state.texto_processado = ler_arquivo(arquivo)
             st.session_state.tipo_doc = identificar_tipo_documento(st.session_state.texto_processado)
             st.session_state.validado = True
