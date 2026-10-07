@@ -6,6 +6,8 @@ import pdfplumber
 from PIL import Image, ImageEnhance, ImageOps
 import pytesseract
 import time
+import cv2
+import numpy as np
 
 # Configuração da página
 st.set_page_config(page_title="Validador de Documentos", page_icon="📋", layout="wide")
@@ -58,13 +60,10 @@ def validar_digitos_cnpj(cnpj: str) -> bool:
 
     return cnpj[-2:] == digito1 + digito2
 
-# --- FUNÇÃO DE CLASSIFICAÇÃO DO DOCUMENTO ---
+# --- FUNÇÃO DE CLASSIFICAÇÃO DO DOCUMENTO (FLEXÍVEL) ---
 
 def identificar_tipo_documento(texto: str) -> str:
     """Classifica o documento com base em palavras-chave abrangentes encontradas no texto."""
-    if not texto:
-        return "Documento Genérico / Não Identificado"
-        
     texto_upper = texto.upper()
 
     if (
@@ -110,7 +109,7 @@ def identificar_tipo_documento(texto: str) -> str:
     else:
         return "Documento Genérico / Não Identificado"
 
-# --- CONSULTA À RECEITA FEDERAL ---
+# --- CONSULTA À RECEITA FEDERAL COM MÚLTIPLAS APIS DE CONTINGÊNCIA ---
 
 @st.cache_data(ttl=3600)
 def consultar_receita_federal(cnpj: str) -> dict:
@@ -166,10 +165,7 @@ def formatar_cnpj(cnpj: str) -> str:
 # --- EXTRAÇÃO ESTRITA DO CNPJ DO BLOCO I (UNIDADE ESCOLAR) ---
 
 def extrair_cnpj_unidade_escolar(texto: str) -> str:
-    """Extrai o CNPJ estritamente contido no Bloco I."""
-    if not texto:
-        return ""
-        
+    """Extrai o CNPJ estritamente contido no Bloco I (Identificação da Unidade Executora Própria)."""
     texto_upper = texto.upper()
     
     bloco_i_texto = texto_upper
@@ -195,13 +191,11 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
 # --- PRÉ-PROCESSAMENTO E TRATAMENTO DE TEXTO OCR ---
 
 def otimizar_imagem_para_ocr(imagem_pil: Image.Image) -> Image.Image:
-    """Ajusta a rotação via EXIF, reduz tamanho se excessivo e melhora o contraste."""
-    try:
-        imagem_pil = ImageOps.exif_transpose(imagem_pil)
-    except Exception:
-        pass
+    """Redimensiona imagens muito grandes e melhora o contraste para acelerar o OCR."""
+    imagem_pil = ImageOps.exif_transpose(imagem_pil)
     
-    max_dim = 2200
+    # Redimenciona se a largura ou altura ultrapassar 2000px
+    max_dim = 2000
     if max(imagem_pil.size) > max_dim:
         imagem_pil.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
         
@@ -221,9 +215,6 @@ def corrigir_substituicoes_ocr(string_cand: str) -> str:
     return "".join([mapeamento.get(char, char) for char in string_cand])
 
 def extrair_cnpjs_de_texto(texto: str) -> list:
-    if not texto:
-        return []
-        
     cnpjs_validos = set()
 
     padrao_cnpj = r'\b[0-9OoDDIlLZSsGGB]{2}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[/\s1lI|]?[0-9OoDDIlLZSsGGB]{4}[-\s]?[0-9OoDDIlLZSsGGB]{2}\b'
@@ -246,9 +237,6 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
 
 def validar_consolidacao_precos(texto: str) -> list:
     """Verifica regras de preenchimento dos Blocos III e IV para Consolidação de Preços."""
-    if not texto:
-        return ["Texto não identificado no arquivo."]
-        
     erros = []
     texto_upper = texto.upper()
 
@@ -266,7 +254,7 @@ def validar_consolidacao_precos(texto: str) -> list:
 
     return erros
 
-# --- FUNÇÃO DE LEITURA ROBUSTA E OTIMIZADA ---
+# --- FUNÇÃO DE LEITURA OTIMIZADA ---
 
 def ler_arquivo(uploaded_file) -> str:
     extensao = uploaded_file.name.split('.')[-1].lower()
@@ -277,23 +265,25 @@ def ler_arquivo(uploaded_file) -> str:
             imagem_original = Image.open(uploaded_file)
             imagem_otimizada = otimizar_imagem_para_ocr(imagem_original)
             
-            # 1. Leitura padrão (PSM padrão lida melhor com layouts genéricos e notas fiscais)
-            t_padrao = pytesseract.image_to_string(imagem_otimizada, lang='por')
-            texto_extraido += t_padrao + "\n"
-            
-            # 2. Leitura tabular (PSM 6 para tabelas e formulários alinhados)
-            t_psm6 = pytesseract.image_to_string(imagem_otimizada, lang='por', config='--psm 6')
-            texto_extraido += t_psm6 + "\n"
+            # 1. Tenta a leitura direta na orientação ajustada pelo EXIF (PSM 6 é ideal para tabelas/documentos)
+            texto_direto = pytesseract.image_to_string(imagem_otimizada, lang='por', config='--psm 6')
+            cnpjs = extrair_cnpjs_de_texto(texto_direto)
 
-            # 3. Rotações adicionais se a leitura direta encontrou menos de 3 CNPJs (Garante leitura de A, B e C)
-            if len(extrair_cnpjs_de_texto(texto_extraido)) < 3:
-                for angulo in [90, 180, 270]:
-                    img_rot = imagem_otimizada.rotate(angulo, expand=True)
-                    t_rot = pytesseract.image_to_string(img_rot, lang='por', config='--psm 6')
-                    texto_extraido += t_rot + "\n"
-                    
-                    if len(extrair_cnpjs_de_texto(texto_extraido)) >= 4:
-                        break
+            # Critério de saída rápida (Early Exit): se já encontrou CNPJ válido ou palavras de consolidação, encerra
+            if len(cnpjs) >= 2 or "CONSOLIDAÇÃO" in texto_direto.upper() or "PDDE" in texto_direto.upper():
+                return texto_direto
+
+            texto_extraido += texto_direto + "\n"
+
+            # 2. Se a leitura direta não foi conclusiva, testa os outros ângulos (90°, 180°, 270°)
+            for angulo in [90, 180, 270]:
+                img_rot = imagem_otimizada.rotate(angulo, expand=True)
+                t = pytesseract.image_to_string(img_rot, lang='por', config='--psm 6')
+                texto_extraido += t + "\n"
+                
+                # Se encontrar informações suficientes em outro ângulo, encerra o loop de rotação
+                if len(extrair_cnpjs_de_texto(t)) >= 2:
+                    break
 
         elif extensao == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
@@ -301,15 +291,13 @@ def ler_arquivo(uploaded_file) -> str:
                     t = pagina.extract_text()
                     if t:
                         texto_extraido += t + "\n"
-            
-            # Se for PDF escaneado (sem texto vetorial)
+                        
             if not texto_extraido.strip():
                 uploaded_file.seek(0)
                 with pdfplumber.open(uploaded_file) as pdf:
                     for pagina in pdf.pages:
-                        img = pagina.to_image(resolution=200).original
+                        img = pagina.to_image().original
                         img_otim = otimizar_imagem_para_ocr(img)
-                        texto_extraido += pytesseract.image_to_string(img_otim, lang='por') + "\n"
                         texto_extraido += pytesseract.image_to_string(img_otim, lang='por', config='--psm 6') + "\n"
 
         elif extensao == 'txt':
@@ -377,7 +365,6 @@ if st.session_state.validado:
         
         cnpj_uex_limpo = re.sub(r'\D', '', str(cnpj_uex)) if cnpj_uex else ""
 
-        # Remove da lista de fornecedores apenas a Prefeitura e o CNPJ específico extraído da UEx
         cnpjs_para_exibir = [
             c for c in cnpjs_encontrados 
             if re.sub(r'\D', '', c) != "06697670000195" and (not cnpj_uex_limpo or re.sub(r'\D', '', c) != cnpj_uex_limpo)
@@ -395,13 +382,17 @@ if st.session_state.validado:
                         st.error(f"❌ **CNPJ {cnpj_formatado}:** {dados['erro']}")
                 else:
                     razao_social_oficial = dados.get("razao_social", "N/A")
+
+                    if "CONSELHO DE ESCOLA" in razao_social_oficial.upper():
+                        continue
+
                     situacao = dados.get("descricao_situacao_cadastral", "DESCONHECIDA")
                     data_situacao = dados.get("data_situacao", "Não informada")
                     nome_fantasia = dados.get("nome_fantasia") or "Não informado"
                     uf = dados.get("uf", "")
                     municipio = dados.get("municipio", "")
 
-                    with st.expander(f"CNPJ: {cnpj_formatado} - {razao_social_oficial}", expanded=True):
+                    with st.expander(f"CNPJ: {cnpj_formatado}", expanded=True):
                         if situacao.upper() == "ATIVA":
                             st.success(f"**Situação Cadastral:** {situacao}")
                         else:
