@@ -3,7 +3,7 @@ import re
 import requests
 import pandas as pd
 import pdfplumber
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageOps
 import pytesseract
 import time
 import cv2
@@ -190,11 +190,18 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
 
 # --- PRÉ-PROCESSAMENTO E TRATAMENTO DE TEXTO OCR ---
 
-def pre_processar_imagem_ocr(imagem_pil):
-    """Aplica binarização e limpeza de imagem para melhorar o OCR de textos pequenos/acinzentados."""
-    img_array = np.array(imagem_pil.convert('L'))
-    _, img_bin = cv2.threshold(img_array, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return Image.fromarray(img_bin)
+def otimizar_imagem_para_ocr(imagem_pil: Image.Image) -> Image.Image:
+    """Redimensiona imagens muito grandes e melhora o contraste para acelerar o OCR."""
+    imagem_pil = ImageOps.exif_transpose(imagem_pil)
+    
+    # Redimenciona se a largura ou altura ultrapassar 2000px
+    max_dim = 2000
+    if max(imagem_pil.size) > max_dim:
+        imagem_pil.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+        
+    img_cinza = imagem_pil.convert('L')
+    enhancer = ImageEnhance.Contrast(img_cinza)
+    return enhancer.enhance(2.0)
 
 def corrigir_substituicoes_ocr(string_cand: str) -> str:
     mapeamento = {
@@ -210,7 +217,6 @@ def corrigir_substituicoes_ocr(string_cand: str) -> str:
 def extrair_cnpjs_de_texto(texto: str) -> list:
     cnpjs_validos = set()
 
-    # Busca padrões comuns de CNPJ permitindo correções de letras confundidas pelo OCR
     padrao_cnpj = r'\b[0-9OoDDIlLZSsGGB]{2}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[/\s1lI|]?[0-9OoDDIlLZSsGGB]{4}[-\s]?[0-9OoDDIlLZSsGGB]{2}\b'
     for c in re.findall(padrao_cnpj, texto):
         c_corrigido = corrigir_substituicoes_ocr(c)
@@ -218,7 +224,6 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
         if len(num) == 14 and validar_digitos_cnpj(num):
             cnpjs_validos.add(num)
 
-    # Busca secundária por qualquer sequência de 14 dígitos válidos
     texto_limpo = corrigir_substituicoes_ocr(texto)
     apenas_numeros = re.sub(r'\D', ' ', texto_limpo)
     for bloco in apenas_numeros.split():
@@ -235,12 +240,10 @@ def validar_consolidacao_precos(texto: str) -> list:
     erros = []
     texto_upper = texto.upper()
 
-    # Verifica presença do Bloco IV no texto
     if "BLOCO IV" not in texto_upper and "APURAÇÃO" not in texto_upper and "APURACAO" not in texto_upper:
         erros.append("Bloco IV (Apuração das Propostas) não identificado no documento.")
         return erros
 
-    # Verifica se há indicação de item de menor valor (Proponente A, B ou C)
     tem_proponente_vencedor = False
     if re.search(r'PROPONENTE\s*\([ABC]\)\s*[\:\-\s]*[1-9]', texto_upper) or "14 - ITENS DE MENOR VALOR" in texto_upper or "PROPONENTE (A) 1" in texto_upper or "PROPONENTE (A)" in texto_upper:
         tem_proponente_vencedor = True
@@ -251,29 +254,36 @@ def validar_consolidacao_precos(texto: str) -> list:
 
     return erros
 
+# --- FUNÇÃO DE LEITURA OTIMIZADA ---
+
 def ler_arquivo(uploaded_file) -> str:
     extensao = uploaded_file.name.split('.')[-1].lower()
     texto_extraido = ""
 
     try:
         if extensao in ['jpg', 'jpeg', 'png']:
-            imagem = Image.open(uploaded_file)
+            imagem_original = Image.open(uploaded_file)
+            imagem_otimizada = otimizar_imagem_para_ocr(imagem_original)
             
-            # Testa todos os 4 ângulos cardinais (0º, 90º, 180º, 270º) com e sem binarização Otsu
-            for angulo in [0, 90, 180, 270]:
-                img_rot = imagem.rotate(angulo, expand=True) if angulo != 0 else imagem
-                
-                # Leitura normal em níveis de cinza com contraste aumentado
-                img_cinza = img_rot.convert('L')
-                enhancer = ImageEnhance.Contrast(img_cinza)
-                img_contraste = enhancer.enhance(2.5)
-                texto_extraido += pytesseract.image_to_string(img_contraste, lang='por') + "\n"
-                texto_extraido += pytesseract.image_to_string(img_contraste, lang='por', config='--psm 6') + "\n"
+            # 1. Tenta a leitura direta na orientação ajustada pelo EXIF (PSM 6 é ideal para tabelas/documentos)
+            texto_direto = pytesseract.image_to_string(imagem_otimizada, lang='por', config='--psm 6')
+            cnpjs = extrair_cnpjs_de_texto(texto_direto)
 
-                # Leitura com binarização OpenCV (Otsu) para tratar textos/CNPJs fracos ou acinzentados
-                img_bin = pre_processar_imagem_ocr(img_rot)
-                texto_extraido += pytesseract.image_to_string(img_bin, lang='por') + "\n"
-                texto_extraido += pytesseract.image_to_string(img_bin, lang='por', config='--psm 6') + "\n"
+            # Critério de saída rápida (Early Exit): se já encontrou CNPJ válido ou palavras de consolidação, encerra
+            if len(cnpjs) >= 2 or "CONSOLIDAÇÃO" in texto_direto.upper() or "PDDE" in texto_direto.upper():
+                return texto_direto
+
+            texto_extraido += texto_direto + "\n"
+
+            # 2. Se a leitura direta não foi conclusiva, testa os outros ângulos (90°, 180°, 270°)
+            for angulo in [90, 180, 270]:
+                img_rot = imagem_otimizada.rotate(angulo, expand=True)
+                t = pytesseract.image_to_string(img_rot, lang='por', config='--psm 6')
+                texto_extraido += t + "\n"
+                
+                # Se encontrar informações suficientes em outro ângulo, encerra o loop de rotação
+                if len(extrair_cnpjs_de_texto(t)) >= 2:
+                    break
 
         elif extensao == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
@@ -287,8 +297,8 @@ def ler_arquivo(uploaded_file) -> str:
                 with pdfplumber.open(uploaded_file) as pdf:
                     for pagina in pdf.pages:
                         img = pagina.to_image().original
-                        img_bin = pre_processar_imagem_ocr(img)
-                        texto_extraido += pytesseract.image_to_string(img_bin, lang='por') + "\n"
+                        img_otim = otimizar_imagem_para_ocr(img)
+                        texto_extraido += pytesseract.image_to_string(img_otim, lang='por', config='--psm 6') + "\n"
 
         elif extensao == 'txt':
             texto_extraido = uploaded_file.read().decode('utf-8', errors='ignore')
