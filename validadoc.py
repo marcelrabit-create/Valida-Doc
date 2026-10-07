@@ -163,33 +163,30 @@ def formatar_cnpj(cnpj: str) -> str:
     c = re.sub(r'\D', '', str(cnpj))
     return f"{c[:2]}.{c[2:5]}.{c[5:8]}/{c[8:12]}-{c[12:]}"
 
-# --- EXTRAÇÃO ESTRITA DO CNPJ DO BLOCO I (UNIDADE ESCOLAR) ---
+# --- EXTRAÇÃO FLEXÍVEL DO CNPJ DO BLOCO I (UNIDADE ESCOLAR / CONSELHO DE ESCOLA) ---
 
 def extrair_cnpj_unidade_escolar(texto: str) -> str:
-    """Extrai o CNPJ estritamente contido no Bloco I."""
+    """Extrai o CNPJ pertencente ao Bloco I (Unidade Escolar / APM / Conselho)."""
     if not texto:
         return ""
         
     texto_upper = texto.upper()
     
+    # Isola o texto do Bloco I se houver indicação do Bloco II
     bloco_i_texto = texto_upper
     if "BLOCO II" in texto_upper:
         bloco_i_texto = texto_upper.split("BLOCO II")[0]
-    
-    match_rotulo = re.search(r'(?:0?2\s*[-–]?\s*CNPJ|CNPJ)[:\s]*([0-9\.\-/]{14,18})', bloco_i_texto)
-    if match_rotulo:
-        c_limpo = re.sub(r'\D', '', match_rotulo.group(1))
-        if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo):
-            return c_limpo
 
-    padrao_cnpj = r'\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b'
-    cnpjs = re.findall(padrao_cnpj, bloco_i_texto)
-    
-    for c in cnpjs:
-        c_limpo = re.sub(r'\D', '', c)
-        if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo):
-            return c_limpo
-            
+    # Busca qualquer CNPJ válido no Bloco I
+    cnpjs_bloco_i = extrair_cnpjs_de_texto(bloco_i_texto)
+    if cnpjs_bloco_i:
+        return cnpjs_bloco_i[0]  # O primeiro CNPJ do documento é o da Escola
+
+    # Se não houver recorte explícito, busca o primeiro CNPJ de todo o texto
+    todos_cnpjs = extrair_cnpjs_de_texto(texto)
+    if todos_cnpjs:
+        return todos_cnpjs[0]
+
     return ""
 
 # --- PRÉ-PROCESSAMENTO E TRATAMENTO DE TEXTO OCR ---
@@ -224,14 +221,15 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
     if not texto:
         return []
         
-    cnpjs_validos = set()
+    cnpjs_validos = []
 
     padrao_cnpj = r'\b[0-9OoDDIlLZSsGGB]{2}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[/\s1lI|]?[0-9OoDDIlLZSsGGB]{4}[-\s]?[0-9OoDDIlLZSsGGB]{2}\b'
     for c in re.findall(padrao_cnpj, texto):
         c_corrigido = corrigir_substituicoes_ocr(c)
         num = re.sub(r'\D', '', c_corrigido)
         if len(num) == 14 and validar_digitos_cnpj(num):
-            cnpjs_validos.add(num)
+            if num not in cnpjs_validos:
+                cnpjs_validos.append(num)
 
     texto_limpo = corrigir_substituicoes_ocr(texto)
     apenas_numeros = re.sub(r'\D', ' ', texto_limpo)
@@ -240,9 +238,10 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
             for i in range(len(bloco) - 13):
                 cand = bloco[i:i+14]
                 if len(cand) == 14 and validar_digitos_cnpj(cand):
-                    cnpjs_validos.add(cand)
+                    if cand not in cnpjs_validos:
+                        cnpjs_validos.append(cand)
 
-    return list(cnpjs_validos)
+    return cnpjs_validos
 
 def validar_consolidacao_precos(texto: str) -> list:
     """Verifica regras de preenchimento dos Blocos III e IV para Consolidação de Preços."""
@@ -277,15 +276,12 @@ def ler_arquivo(uploaded_file) -> str:
             imagem_original = Image.open(uploaded_file)
             imagem_otimizada = otimizar_imagem_para_ocr(imagem_original)
             
-            # 1. Leitura padrão
             t_padrao = pytesseract.image_to_string(imagem_otimizada, lang='por')
             texto_extraido += t_padrao + "\n"
             
-            # 2. Leitura tabular (PSM 6)
             t_psm6 = pytesseract.image_to_string(imagem_otimizada, lang='por', config='--psm 6')
             texto_extraido += t_psm6 + "\n"
 
-            # 3. Rotações adicionais se a leitura direta encontrou menos de 3 CNPJs
             if len(extrair_cnpjs_de_texto(texto_extraido)) < 3:
                 for angulo in [90, 180, 270]:
                     img_rot = imagem_otimizada.rotate(angulo, expand=True)
@@ -349,7 +345,7 @@ if st.session_state.validado:
     else:
         st.info(f"**{st.session_state.tipo_doc}**")
 
-    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (APENAS DO BLOCO I)
+    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (EXIBIDO NO TOPO)
     cnpj_uex = ""
     if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
         st.divider()
@@ -367,27 +363,40 @@ if st.session_state.validado:
         st.write(f"**Razão Social:** {razao_social_uex}")
         st.write(f"**CNPJ:** {cnpj_formatado_uex}")
 
-    # 2º: VALIDAÇÃO NA RECEITA FEDERAL (APENAS PROPONENTES / FORNECEDORES)
+    # 2º: VALIDAÇÃO NA RECEITA FEDERAL (EXCLUSIVO PARA PROPONENTES / FORNECEDORES)
     if st.session_state.tipo_doc != "Documento Genérico / Não Identificado":
         st.divider()
         st.subheader("🔍 Validação na Receita Federal (Proponentes / Fornecedores)")
 
-        # Delimita a busca a partir do Bloco II para ignorar o Bloco I
-        texto_busca_fornecedores = st.session_state.texto_processado
-        if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços" and "BLOCO II" in st.session_state.texto_processado.upper():
-            texto_busca_fornecedores = st.session_state.texto_processado.upper().split("BLOCO II", 1)[1]
-
-        cnpjs_encontrados = extrair_cnpjs_de_texto(texto_busca_fornecedores)
+        # Pega todos os CNPJs do documento
+        cnpjs_encontrados = extrair_cnpjs_de_texto(st.session_state.texto_processado)
         cnpj_uex_limpo = re.sub(r'\D', '', str(cnpj_uex)) if cnpj_uex else ""
 
-        # Descarta a Prefeitura e exclui explicitamente o CNPJ da UEx/Conselho de Escola
-        cnpjs_para_exibir = [
-            c for c in cnpjs_encontrados 
-            if re.sub(r'\D', '', c) != "06697670000195" and (not cnpj_uex_limpo or re.sub(r'\D', '', c) != cnpj_uex_limpo)
-        ]
+        cnpjs_para_exibir = []
+        for c in cnpjs_encontrados:
+            c_limpo = re.sub(r'\D', '', c)
+            
+            # Descarta Prefeitura
+            if c_limpo == "06697670000195":
+                continue
+                
+            # Descarta o CNPJ da UEx/Escola capturado no Bloco I
+            if cnpj_uex_limpo and c_limpo == cnpj_uex_limpo:
+                continue
+                
+            # Dupla checagem: consulta rápida se a Razão Social tem "CONSELHO DE ESCOLA" ou "APM" para garantir que não passe
+            dados_temp = consultar_receita_federal(c_limpo)
+            razao_temp = dados_temp.get("razao_social", "").upper() if isinstance(dados_temp, dict) else ""
+            if "CONSELHO DE ESCOLA" in razao_temp or "ASSOCIACAO DE PAIS" in razao_temp or "ASSOCIAÇÃO DE PAIS" in razao_temp:
+                # Se for o Conselho e por algum motivo não bateu com cnpj_uex, atualiza o topo
+                if not cnpj_uex:
+                    cnpj_uex = c_limpo
+                continue
+                
+            cnpjs_para_exibir.append(c_limpo)
 
         if not cnpjs_para_exibir:
-            st.warning("⚠ Nenhum CNPJ de fornecedor/proponente foi encontrado no Bloco II.")
+            st.warning("⚠ Nenhum CNPJ de fornecedor/proponente foi encontrado no documento.")
         else:
             for cnpj in cnpjs_para_exibir:
                 dados = consultar_receita_federal(cnpj)
