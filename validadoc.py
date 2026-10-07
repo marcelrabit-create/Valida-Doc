@@ -75,7 +75,7 @@ def corrigir_substituicoes_ocr(string_cand: str) -> str:
 
 def identificar_tipo_documento(texto: str) -> str:
     texto_upper = texto.upper()
-    if any(k in texto_upper for k in ["CONSOLIDACAO", "CONSOLIDAÇÃO", "PESQUISAS DE PRECOS", "PESQUISAS DE PREÇOS", "BLOCO I", "UEX", "PDDE"]):
+    if any(k in texto_upper for k in ["CONSOLIDACAO", "CONSOLIDAÇÃO", "PESQUISAS DE PRECOS", "PESQUISAS DE PREÇOS", "BLOCO I", "UEX", "PDDE", "EMEEIF"]):
         return "Consolidação de Pesquisas de Preços"
     elif any(k in texto_upper for k in ["NOTA FISCAL DE SERVICOS", "NOTA FISCAL DE SERVIÇOS", "NFS-E", "NFSE", "ISSQN"]):
         return "Nota Fiscal de Serviços"
@@ -133,6 +133,7 @@ def formatar_cnpj(cnpj: str) -> str:
 def extrair_cnpjs_de_texto(texto: str) -> list:
     cnpjs_validos = []
 
+    # Procura por padrões clássicos de CNPJ com formato
     padrao_cnpj = r'\b[0-9OoDDIlLZSsGGB]{2}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[/\s1lI|]?[0-9OoDDIlLZSsGGB]{4}[-\s]?[0-9OoDDIlLZSsGGB]{2}\b'
     for c in re.findall(padrao_cnpj, texto):
         c_corrigido = corrigir_substituicoes_ocr(c)
@@ -140,6 +141,7 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
         if len(num) == 14 and validar_digitos_cnpj(num) and num not in cnpjs_validos:
             cnpjs_validos.append(num)
 
+    # Varredura secundária em sequências numéricas de 14 dígitos contínuos
     texto_limpo = corrigir_substituicoes_ocr(texto)
     apenas_numeros = re.sub(r'\D', ' ', texto_limpo)
     for bloco in apenas_numeros.split():
@@ -170,6 +172,7 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
             if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo) and c_limpo != "06697670000195":
                 return c_limpo
 
+    # Fallback: pega o primeiro CNPJ válido encontrado na folha (geralmente o da UEx do topo)
     cnpjs_gerais = extrair_cnpjs_de_texto(texto)
     for c in cnpjs_gerais:
         c_limpo = re.sub(r'\D', '', c)
@@ -178,83 +181,84 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
 
     return ""
 
-# --- DETECÇÃO DE ORIENTAÇÃO E PROCESSAMENTO DE IMAGEM ---
+# --- PROCESSAMENTO DE IMAGEM COM TESTE DE ROTAÇÕES ---
 
-def orientar_e_pre_processar(imagem_pil: Image.Image) -> list:
-    """Detecta orientação da foto e gera versões na posição correta (0°, 90°, 270°)."""
+def processar_imagem_com_rotacao(imagem_pil: Image.Image) -> str:
+    """Testa a imagem em 4 rotações (0°, 90°, 180°, 270°) e retorna a leitura com mais CNPJs e texto legível."""
     imagem_pil = ImageOps.exif_transpose(imagem_pil)
     
-    # Lista de rotações a serem testadas para garantir captura de imagens na vertical/de lado
-    rotacoes = [0, 90, 270]
-    
-    # Tenta detectar ângulo via OSD (Orientation and Script Detection) do Tesseract
-    try:
-        osd = pytesseract.image_to_osd(imagem_pil)
-        angulo_detectado = int(re.search(r'Rotate: (\d+)', osd).group(1))
-        if angulo_detectado in [90, 180, 270]:
-            rotacoes.insert(0, 360 - angulo_detectado if angulo_detectado in [90, 270] else 180)
-    except Exception:
-        pass
+    # Rotações em graus anti-horário
+    angulos = [0, 90, 180, 270]
+    melhor_texto = ""
+    max_cnpjs = -1
 
-    imagens_processadas = []
-    for angulo in rotacoes:
+    for angulo in angulos:
         img_rot = imagem_pil.rotate(angulo, expand=True) if angulo != 0 else imagem_pil
-        img_gray = cv2.cvtColor(np.array(img_rot), cv2.COLOR_RGB2GRAY)
         
-        # Redimensionamento para nitidez
+        # Pré-processamento OpenCV para melhorar nitidez do OCR
+        img_gray = cv2.cvtColor(np.array(img_rot), cv2.COLOR_RGB2GRAY)
         h, w = img_gray.shape
         img_resized = cv2.resize(img_gray, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
         
-        # Binarização adaptativa e CLAHE
-        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-        img_clahe = clahe.apply(img_resized)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        img_proc = clahe.apply(img_resized)
         
-        imagens_processadas.append(Image.fromarray(img_clahe))
+        # Tenta a leitura com o PSM adequado para blocos de texto
+        txt1 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 6')
+        txt2 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 3')
+        txt_combinado = txt1 + "\n" + txt2
         
-    return imagens_processadas
+        cnpjs_encontrados = len(extrair_cnpjs_de_texto(txt_combinado))
+        
+        # Seleciona o texto da orientação que conseguiu capturar a maior quantidade de CNPJs
+        if cnpjs_encontrados > max_cnpjs:
+            max_cnpjs = cnpjs_encontrados
+            melhor_texto = txt_combinado
+
+    return melhor_texto
 
 def ler_arquivo(uploaded_file) -> str:
     extensao = uploaded_file.name.split('.')[-1].lower()
-    texto_acumulado = []
 
     try:
         if extensao in ['jpg', 'jpeg', 'png']:
             imagem_original = Image.open(uploaded_file)
-            variacoes = orientar_e_pre_processar(imagem_original)
-            
-            for img in variacoes:
-                texto_acumulado.append(pytesseract.image_to_string(img, lang='por', config='--psm 3'))
-                texto_acumulado.append(pytesseract.image_to_string(img, lang='por', config='--psm 6'))
+            return processar_imagem_com_rotacao(imagem_original)
 
         elif extensao == 'pdf':
+            texto_pdf = []
             with pdfplumber.open(uploaded_file) as pdf:
                 for pagina in pdf.pages:
                     t = pagina.extract_text()
                     if t:
-                        texto_acumulado.append(t)
+                        texto_pdf.append(t)
             
-            if not texto_acumulado:
+            if texto_pdf:
+                return "\n".join(texto_pdf)
+            else:
+                # Caso o PDF seja digitalizado/imagem
                 uploaded_file.seek(0)
+                textos_paginas = []
                 with pdfplumber.open(uploaded_file) as pdf:
                     for pagina in pdf.pages:
                         img = pagina.to_image(resolution=300).original
-                        variacoes = orientar_e_pre_processar(img)
-                        for v in variacoes:
-                            texto_acumulado.append(pytesseract.image_to_string(v, lang='por', config='--psm 3'))
-                            texto_acumulado.append(pytesseract.image_to_string(v, lang='por', config='--psm 6'))
+                        textos_paginas.append(processar_imagem_com_rotacao(img))
+                return "\n".join(textos_paginas)
 
         elif extensao == 'txt':
-            texto_acumulado.append(uploaded_file.read().decode('utf-8', errors='ignore'))
+            return uploaded_file.read().decode('utf-8', errors='ignore')
 
         elif extensao in ['xls', 'xlsm', 'xlsx']:
             df_dict = pd.read_excel(uploaded_file, sheet_name=None)
+            textos_excel = []
             for _, aba in df_dict.items():
-                texto_acumulado.append(aba.to_string())
+                textos_excel.append(aba.to_string())
+            return "\n".join(textos_excel)
 
     except Exception as e:
         st.error(f"Erro ao processar o arquivo: {e}")
 
-    return "\n".join(texto_acumulado)
+    return ""
 
 # --- VALIDAÇÃO DO BLOCO IV ---
 
@@ -282,7 +286,7 @@ if not st.session_state.validado:
     )
 
     if arquivo is not None:
-        with st.spinner("Analisando e desrotacionando imagem para leitura..."):
+        with st.spinner("Analisando rotação e aplicando OCR na imagem..."):
             st.session_state.texto_processado = ler_arquivo(arquivo)
             st.session_state.tipo_doc = identificar_tipo_documento(st.session_state.texto_processado)
             st.session_state.validado = True
