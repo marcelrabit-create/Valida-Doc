@@ -60,7 +60,7 @@ def validar_digitos_cnpj(cnpj: str) -> bool:
 
     return cnpj[-2:] == digito1 + digito2
 
-# --- FUNÇÃO DE CLASSIFICAÇÃO DO DOCUMENTO (FLEXÍVEL) ---
+# --- FUNÇÃO DE CLASSIFICAÇÃO DO DOCUMENTO ---
 
 def identificar_tipo_documento(texto: str) -> str:
     """Classifica o documento com base em palavras-chave abrangentes encontradas no texto."""
@@ -109,7 +109,7 @@ def identificar_tipo_documento(texto: str) -> str:
     else:
         return "Documento Genérico / Não Identificado"
 
-# --- CONSULTA À RECEITA FEDERAL COM MÚLTIPLAS APIS DE CONTINGÊNCIA ---
+# --- CONSULTA À RECEITA FEDERAL ---
 
 @st.cache_data(ttl=3600)
 def consultar_receita_federal(cnpj: str) -> dict:
@@ -156,7 +156,7 @@ def consultar_receita_federal(cnpj: str) -> dict:
         
         time.sleep(1)
 
-    return {"erro": "A API pública de consulta está temporariamente indisponível para este CNPJ de filial. Tente novamente em instantes."}
+    return {"erro": "A API pública de consulta está temporariamente indisponível para este CNPJ. Tente novamente em instantes."}
 
 def formatar_cnpj(cnpj: str) -> str:
     c = re.sub(r'\D', '', str(cnpj))
@@ -191,17 +191,20 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
 # --- PRÉ-PROCESSAMENTO E TRATAMENTO DE TEXTO OCR ---
 
 def otimizar_imagem_para_ocr(imagem_pil: Image.Image) -> Image.Image:
-    """Redimensiona imagens muito grandes e melhora o contraste para acelerar o OCR."""
+    """Aplica equalização adaptativa (CLAHE) para eliminar sombras nas margens laterais."""
     imagem_pil = ImageOps.exif_transpose(imagem_pil)
     
-    # Redimenciona se a largura ou altura ultrapassar 2000px
     max_dim = 2000
     if max(imagem_pil.size) > max_dim:
         imagem_pil.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
         
-    img_cinza = imagem_pil.convert('L')
-    enhancer = ImageEnhance.Contrast(img_cinza)
-    return enhancer.enhance(2.0)
+    img_np = np.array(imagem_pil.convert('L'))
+    
+    # Aplicação do CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    img_equalizada = clahe.apply(img_np)
+    
+    return Image.fromarray(img_equalizada)
 
 def corrigir_substituicoes_ocr(string_cand: str) -> str:
     mapeamento = {
@@ -235,8 +238,18 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
 
     return list(cnpjs_validos)
 
+def extrair_proponentes_bloco_ii(texto: str) -> list:
+    """Isola a leitura estritamente no BLOCO II do formulário."""
+    texto_upper = texto.upper()
+    if "BLOCO II" in texto_upper:
+        bloco_ii = texto_upper.split("BLOCO II")[1]
+        if "BLOCO III" in bloco_ii:
+            bloco_ii = bloco_ii.split("BLOCO III")[0]
+        return extrair_cnpjs_de_texto(bloco_ii)
+    return extrair_cnpjs_de_texto(texto)
+
 def validar_consolidacao_precos(texto: str) -> list:
-    """Verifica regras de preenchimento dos Blocos III e IV para Consolidação de Preços."""
+    """Valida as regras de preenchimento dos Blocos III e IV da Consolidação."""
     erros = []
     texto_upper = texto.upper()
 
@@ -254,7 +267,7 @@ def validar_consolidacao_precos(texto: str) -> list:
 
     return erros
 
-# --- FUNÇÃO DE LEITURA OTIMIZADA ---
+# --- LEITURA DO ARQUIVO ---
 
 def ler_arquivo(uploaded_file) -> str:
     extensao = uploaded_file.name.split('.')[-1].lower()
@@ -265,23 +278,20 @@ def ler_arquivo(uploaded_file) -> str:
             imagem_original = Image.open(uploaded_file)
             imagem_otimizada = otimizar_imagem_para_ocr(imagem_original)
             
-            # 1. Tenta a leitura direta na orientação ajustada pelo EXIF (PSM 6 é ideal para tabelas/documentos)
+            # 1. Leitura direta no modo de tabela/blocos (PSM 6)
             texto_direto = pytesseract.image_to_string(imagem_otimizada, lang='por', config='--psm 6')
             cnpjs = extrair_cnpjs_de_texto(texto_direto)
 
-            # Critério de saída rápida (Early Exit): se já encontrou CNPJ válido ou palavras de consolidação, encerra
             if len(cnpjs) >= 2 or "CONSOLIDAÇÃO" in texto_direto.upper() or "PDDE" in texto_direto.upper():
                 return texto_direto
 
             texto_extraido += texto_direto + "\n"
 
-            # 2. Se a leitura direta não foi conclusiva, testa os outros ângulos (90°, 180°, 270°)
+            # 2. Rotação caso a imagem esteja invertida/de lado
             for angulo in [90, 180, 270]:
                 img_rot = imagem_otimizada.rotate(angulo, expand=True)
                 t = pytesseract.image_to_string(img_rot, lang='por', config='--psm 6')
                 texto_extraido += t + "\n"
-                
-                # Se encontrar informações suficientes em outro ângulo, encerra o loop de rotação
                 if len(extrair_cnpjs_de_texto(t)) >= 2:
                     break
 
@@ -313,7 +323,7 @@ def ler_arquivo(uploaded_file) -> str:
 
     return texto_extraido
 
-# --- INTERFACE E FLUXO PRINCIPAL ---
+# --- FLUXO PRINCIPAL DA INTERFACE ---
 
 if not st.session_state.validado:
     arquivo = st.file_uploader(
@@ -338,7 +348,7 @@ if st.session_state.validado:
     else:
         st.info(f"**{st.session_state.tipo_doc}**")
 
-    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (APENAS DO BLOCO I)
+    # 1º: UNIDADE ESCOLAR (BLOCO I)
     cnpj_uex = ""
     if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
         st.divider()
@@ -356,19 +366,25 @@ if st.session_state.validado:
         st.write(f"**Razão Social:** {razao_social_uex}")
         st.write(f"**CNPJ:** {cnpj_formatado_uex}")
 
-    # 2º: VALIDAÇÃO NA RECEITA FEDERAL (DOS FORNECEDORES/PROPONENTES)
+    # 2º: PROPONENTES / FORNECEDORES (BLOCO II)
     if st.session_state.tipo_doc != "Documento Genérico / Não Identificado":
         st.divider()
         st.subheader("🔍 Validação na Receita Federal")
 
-        cnpjs_encontrados = extrair_cnpjs_de_texto(st.session_state.texto_processado)
+        if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
+            cnpjs_encontrados = extrair_proponentes_bloco_ii(st.session_state.texto_processado)
+        else:
+            cnpjs_encontrados = extrair_cnpjs_de_texto(st.session_state.texto_processado)
         
         cnpj_uex_limpo = re.sub(r'\D', '', str(cnpj_uex)) if cnpj_uex else ""
 
-        cnpjs_para_exibir = [
-            c for c in cnpjs_encontrados 
-            if re.sub(r'\D', '', c) != "06697670000195" and (not cnpj_uex_limpo or re.sub(r'\D', '', c) != cnpj_uex_limpo)
-        ]
+        # Ignora o CNPJ do FNDE ("06.697.670/0001-95") e o CNPJ da própria escola
+        cnpjs_para_exibir = []
+        for c in cnpjs_encontrados:
+            c_limpo = re.sub(r'\D', '', c)
+            if c_limpo != "06697670000195" and (not cnpj_uex_limpo or c_limpo != cnpj_uex_limpo):
+                if c_limpo not in [re.sub(r'\D', '', x) for x in cnpjs_para_exibir]:
+                    cnpjs_para_exibir.append(c)
 
         if not cnpjs_para_exibir:
             st.warning("⚠ Nenhum CNPJ de fornecedor/emitente válido foi encontrado no arquivo anexado.")
@@ -382,10 +398,6 @@ if st.session_state.validado:
                         st.error(f"❌ **CNPJ {cnpj_formatado}:** {dados['erro']}")
                 else:
                     razao_social_oficial = dados.get("razao_social", "N/A")
-
-                    if "CONSELHO DE ESCOLA" in razao_social_oficial.upper():
-                        continue
-
                     situacao = dados.get("descricao_situacao_cadastral", "DESCONHECIDA")
                     data_situacao = dados.get("data_situacao", "Não informada")
                     nome_fantasia = dados.get("nome_fantasia") or "Não informado"
@@ -406,7 +418,7 @@ if st.session_state.validado:
                             st.write(f"**Cidade/UF:** {municipio} - {uf}")
                             st.write(f"**Atividade Principal:** {dados.get('cnae_fiscal_descricao', 'N/A')}")
 
-    # 3º: VALIDAÇÃO DOS BLOCOS (SE FOR CONSOLIDAÇÃO DE PREÇOS)
+    # 3º: VALIDAÇÃO DE CONSOLIDAÇÃO DE PREÇOS (BLOCOS III E IV)
     if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
         st.divider()
         st.subheader("🔍 Validação dos Blocos (Consolidação de Preços)")
