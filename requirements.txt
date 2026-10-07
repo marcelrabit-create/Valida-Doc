@@ -5,3 +5,4 @@ openpyxl
 pdfplumber
 pytesseract
 Pillow
+opencv-python-headless
