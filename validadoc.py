@@ -6,6 +6,8 @@ import pdfplumber
 from PIL import Image, ImageEnhance, ImageOps
 import pytesseract
 import time
+import cv2
+import numpy as np
 
 # Configuração da página
 st.set_page_config(page_title="Validador de Documentos", page_icon="📋", layout="wide")
@@ -58,7 +60,7 @@ def validar_digitos_cnpj(cnpj: str) -> bool:
 
     return cnpj[-2:] == digito1 + digito2
 
-# --- FUNÇÃO DE CLASSIFICAÇÃO DO DOCUMENTO ---
+# --- FUNÇÃO DE CLASSIFICAÇÃO DO DOCUMENTO (FLEXÍVEL) ---
 
 def identificar_tipo_documento(texto: str) -> str:
     """Classifica o documento com base em palavras-chave abrangentes encontradas no texto."""
@@ -107,11 +109,11 @@ def identificar_tipo_documento(texto: str) -> str:
     else:
         return "Documento Genérico / Não Identificado"
 
-# --- CONSULTA À RECEITA FEDERAL ---
+# --- CONSULTA À RECEITA FEDERAL COM MÚLTIPLAS APIS DE CONTINGÊNCIA ---
 
 @st.cache_data(ttl=3600)
 def consultar_receita_federal(cnpj: str) -> dict:
-    """Consulta múltiplas APIs públicas de CNPJ em cascata."""
+    """Consulta múltiplas APIs públicas de CNPJ em cascata para evitar falhas de instabilidade."""
     cnpj_limpo = re.sub(r'\D', '', str(cnpj))
     
     endpoints = [
@@ -160,10 +162,10 @@ def formatar_cnpj(cnpj: str) -> str:
     c = re.sub(r'\D', '', str(cnpj))
     return f"{c[:2]}.{c[2:5]}.{c[5:8]}/{c[8:12]}-{c[12:]}"
 
-# --- EXTRAÇÃO ESTRITA DO CNPJ DO BLOCO I ---
+# --- EXTRAÇÃO ESTRITA DO CNPJ DO BLOCO I (UNIDADE ESCOLAR) ---
 
 def extrair_cnpj_unidade_escolar(texto: str) -> str:
-    """Extrai o CNPJ estritamente contido no Bloco I."""
+    """Extrai o CNPJ estritamente contido no Bloco I (Identificação da Unidade Executora Própria)."""
     texto_upper = texto.upper()
     
     bloco_i_texto = texto_upper
@@ -186,17 +188,20 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
             
     return ""
 
-# --- PRÉ-PROCESSAMENTO USANDO APENAS PILLOW (SEM OPENCV) ---
+# --- PRÉ-PROCESSAMENTO E TRATAMENTO DE TEXTO OCR ---
 
-def pre_processar_imagem_pil(imagem_pil):
-    """Aplica binarização e ajuste de nitidez nativos do Pillow."""
+def otimizar_imagem_para_ocr(imagem_pil: Image.Image) -> Image.Image:
+    """Redimensiona imagens muito grandes e melhora o contraste para acelerar o OCR."""
+    imagem_pil = ImageOps.exif_transpose(imagem_pil)
+    
+    # Redimenciona se a largura ou altura ultrapassar 2000px
+    max_dim = 2000
+    if max(imagem_pil.size) > max_dim:
+        imagem_pil.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+        
     img_cinza = imagem_pil.convert('L')
-    img_contraste = ImageEnhance.Contrast(img_cinza).enhance(3.0)
-    img_nitida = ImageEnhance.Sharpness(img_contraste).enhance(2.0)
-    # Limiarização / Binarização via threshold
-    threshold = 150
-    img_bin = img_nitida.point(lambda p: 255 if p > threshold else 0)
-    return img_bin
+    enhancer = ImageEnhance.Contrast(img_cinza)
+    return enhancer.enhance(2.0)
 
 def corrigir_substituicoes_ocr(string_cand: str) -> str:
     mapeamento = {
@@ -249,29 +254,36 @@ def validar_consolidacao_precos(texto: str) -> list:
 
     return erros
 
+# --- FUNÇÃO DE LEITURA OTIMIZADA ---
+
 def ler_arquivo(uploaded_file) -> str:
     extensao = uploaded_file.name.split('.')[-1].lower()
     texto_extraido = ""
 
     try:
         if extensao in ['jpg', 'jpeg', 'png']:
-            imagem = Image.open(uploaded_file)
+            imagem_original = Image.open(uploaded_file)
+            imagem_otimizada = otimizar_imagem_para_ocr(imagem_original)
             
-            # Testa todos os 4 ângulos cardinais (0º, 90º, 180º, 270º)
-            for angulo in [0, 90, 180, 270]:
-                img_rot = imagem.rotate(angulo, expand=True) if angulo != 0 else imagem
-                
-                # Leitura normal em escala de cinza com contraste
-                img_cinza = img_rot.convert('L')
-                enhancer = ImageEnhance.Contrast(img_cinza)
-                img_contraste = enhancer.enhance(2.5)
-                texto_extraido += pytesseract.image_to_string(img_contraste, lang='por') + "\n"
-                texto_extraido += pytesseract.image_to_string(img_contraste, lang='por', config='--psm 6') + "\n"
+            # 1. Tenta a leitura direta na orientação ajustada pelo EXIF (PSM 6 é ideal para tabelas/documentos)
+            texto_direto = pytesseract.image_to_string(imagem_otimizada, lang='por', config='--psm 6')
+            cnpjs = extrair_cnpjs_de_texto(texto_direto)
 
-                # Leitura com binarização via Pillow
-                img_bin = pre_processar_imagem_pil(img_rot)
-                texto_extraido += pytesseract.image_to_string(img_bin, lang='por') + "\n"
-                texto_extraido += pytesseract.image_to_string(img_bin, lang='por', config='--psm 6') + "\n"
+            # Critério de saída rápida (Early Exit): se já encontrou CNPJ válido ou palavras de consolidação, encerra
+            if len(cnpjs) >= 2 or "CONSOLIDAÇÃO" in texto_direto.upper() or "PDDE" in texto_direto.upper():
+                return texto_direto
+
+            texto_extraido += texto_direto + "\n"
+
+            # 2. Se a leitura direta não foi conclusiva, testa os outros ângulos (90°, 180°, 270°)
+            for angulo in [90, 180, 270]:
+                img_rot = imagem_otimizada.rotate(angulo, expand=True)
+                t = pytesseract.image_to_string(img_rot, lang='por', config='--psm 6')
+                texto_extraido += t + "\n"
+                
+                # Se encontrar informações suficientes em outro ângulo, encerra o loop de rotação
+                if len(extrair_cnpjs_de_texto(t)) >= 2:
+                    break
 
         elif extensao == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
@@ -285,8 +297,8 @@ def ler_arquivo(uploaded_file) -> str:
                 with pdfplumber.open(uploaded_file) as pdf:
                     for pagina in pdf.pages:
                         img = pagina.to_image().original
-                        img_bin = pre_processar_imagem_pil(img)
-                        texto_extraido += pytesseract.image_to_string(img_bin, lang='por') + "\n"
+                        img_otim = otimizar_imagem_para_ocr(img)
+                        texto_extraido += pytesseract.image_to_string(img_otim, lang='por', config='--psm 6') + "\n"
 
         elif extensao == 'txt':
             texto_extraido = uploaded_file.read().decode('utf-8', errors='ignore')
@@ -326,7 +338,7 @@ if st.session_state.validado:
     else:
         st.info(f"**{st.session_state.tipo_doc}**")
 
-    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR
+    # 1º: IDENTIFICAÇÃO DA UNIDADE ESCOLAR (APENAS DO BLOCO I)
     cnpj_uex = ""
     if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
         st.divider()
@@ -344,7 +356,7 @@ if st.session_state.validado:
         st.write(f"**Razão Social:** {razao_social_uex}")
         st.write(f"**CNPJ:** {cnpj_formatado_uex}")
 
-    # 2º: VALIDAÇÃO NA RECEITA FEDERAL
+    # 2º: VALIDAÇÃO NA RECEITA FEDERAL (DOS FORNECEDORES/PROPONENTES)
     if st.session_state.tipo_doc != "Documento Genérico / Não Identificado":
         st.divider()
         st.subheader("🔍 Validação na Receita Federal")
@@ -394,7 +406,7 @@ if st.session_state.validado:
                             st.write(f"**Cidade/UF:** {municipio} - {uf}")
                             st.write(f"**Atividade Principal:** {dados.get('cnae_fiscal_descricao', 'N/A')}")
 
-    # 3º: VALIDAÇÃO DOS BLOCOS
+    # 3º: VALIDAÇÃO DOS BLOCOS (SE FOR CONSOLIDAÇÃO DE PREÇOS)
     if st.session_state.tipo_doc == "Consolidação de Pesquisas de Preços":
         st.divider()
         st.subheader("🔍 Validação dos Blocos (Consolidação de Preços)")
