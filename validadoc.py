@@ -3,7 +3,7 @@ import re
 import requests
 import pandas as pd
 import pdfplumber
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageOps
 import pytesseract
 import time
 
@@ -248,6 +248,8 @@ def validar_consolidacao_precos(texto: str) -> list:
 
     return erros
 
+# --- FUNÇÃO DE LEITURA COM ROTAÇÃO AUTO-AJUSTÁVEL ---
+
 def ler_arquivo(uploaded_file) -> str:
     extensao = uploaded_file.name.split('.')[-1].lower()
     texto_extraido = ""
@@ -256,15 +258,21 @@ def ler_arquivo(uploaded_file) -> str:
         if extensao in ['jpg', 'jpeg', 'png']:
             imagem = Image.open(uploaded_file)
             
+            # Ajusta orientação original baseada nas tags EXIF da foto
+            imagem = ImageOps.exif_transpose(imagem)
+
+            # Rota a imagem nos 4 ângulos cardinais (0°, 90°, 180°, 270°) para capturar tabelas deitadas
             for angulo in [0, 90, 180, 270]:
                 img_rot = imagem.rotate(angulo, expand=True) if angulo != 0 else imagem
                 
+                # Leitura normal em escala de cinza com aumento de contraste
                 img_cinza = img_rot.convert('L')
                 enhancer = ImageEnhance.Contrast(img_cinza)
                 img_contraste = enhancer.enhance(2.5)
                 texto_extraido += pytesseract.image_to_string(img_contraste, lang='por') + "\n"
                 texto_extraido += pytesseract.image_to_string(img_contraste, lang='por', config='--psm 6') + "\n"
 
+                # Leitura adicional aplicando binarização
                 img_bin = pre_processar_imagem_pil(img_rot)
                 texto_extraido += pytesseract.image_to_string(img_bin, lang='por') + "\n"
                 texto_extraido += pytesseract.image_to_string(img_bin, lang='por', config='--psm 6') + "\n"
@@ -404,7 +412,6 @@ if st.session_state.validado:
             st.success("✅ Nenhum erro encontrado nos blocos III e IV da consolidação.")
 
     st.divider()
-    # BOTÃO ALTERADO SEM ÍCONE DE SETA:
     if st.button("Voltar (Nova Validação)", use_container_width=True):
         st.session_state.validado = False
         st.session_state.texto_processado = ""
