@@ -75,7 +75,7 @@ def corrigir_substituicoes_ocr(string_cand: str) -> str:
 
 def identificar_tipo_documento(texto: str) -> str:
     texto_upper = texto.upper()
-    if any(k in texto_upper for k in ["CONSOLIDACAO", "CONSOLIDAÇÃO", "PESQUISAS DE PRECOS", "PESQUISAS DE PREÇOS", "BLOCO I", "UEX", "PDDE", "EMEEIF"]):
+    if any(k in texto_upper for k in ["CONSOLIDACAO", "CONSOLIDAÇÃO", "PESQUISAS DE PRECOS", "PESQUISAS DE PREÇOS", "BLOCO I", "UEX", "PDDE", "EMEEIF", "PARANAPIACABA"]):
         return "Consolidação de Pesquisas de Preços"
     elif any(k in texto_upper for k in ["NOTA FISCAL DE SERVICOS", "NOTA FISCAL DE SERVIÇOS", "NFS-E", "NFSE", "ISSQN"]):
         return "Nota Fiscal de Serviços"
@@ -133,7 +133,7 @@ def formatar_cnpj(cnpj: str) -> str:
 def extrair_cnpjs_de_texto(texto: str) -> list:
     cnpjs_validos = []
 
-    # Procura por padrões clássicos de CNPJ com formato
+    # Procura por padrões com máscaras pontuadas ou com substituições de OCR
     padrao_cnpj = r'\b[0-9OoDDIlLZSsGGB]{2}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[/\s1lI|]?[0-9OoDDIlLZSsGGB]{4}[-\s]?[0-9OoDDIlLZSsGGB]{2}\b'
     for c in re.findall(padrao_cnpj, texto):
         c_corrigido = corrigir_substituicoes_ocr(c)
@@ -141,7 +141,7 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
         if len(num) == 14 and validar_digitos_cnpj(num) and num not in cnpjs_validos:
             cnpjs_validos.append(num)
 
-    # Varredura secundária em sequências numéricas de 14 dígitos contínuos
+    # Varredura em blocos contínuos de dígitos
     texto_limpo = corrigir_substituicoes_ocr(texto)
     apenas_numeros = re.sub(r'\D', ' ', texto_limpo)
     for bloco in apenas_numeros.split():
@@ -153,49 +153,47 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
 
     return cnpjs_validos
 
-# --- EXTRAÇÃO DO CNPJ DA UNIDADE ESCOLAR ---
+# --- EXTRAÇÃO DO CNPJ ESPECÍFICO DA UNIDADE ESCOLAR (BLOCO I) ---
 
 def extrair_cnpj_unidade_escolar(texto: str) -> str:
     texto_corrigido = corrigir_substituicoes_ocr(texto)
     
-    padroes_rotulo = [
-        r'(?:02|0Z|O2|2)[\s\-\:]*(?:CNPJ)?[^\d]*(\d[\d\.\-/]{13,18}\d)',
-        r'CNPJ[^\d]*(\d[\d\.\-/]{13,18}\d)[^\n]*CONSELHO',
-        r'CONSELHO[^\n]*(\d[\d\.\-/]{13,18}\d)',
-        r'UEX[^\n]*(\d[\d\.\-/]{13,18}\d)'
+    # 1. Tenta capturar o CNPJ que esteja diretamente ligado a termos de Unidade Escolar
+    padroes_especificos = [
+        r'(?:CONSELHO|EMEEIF|EMEF|UEX|ESCOLA)[^\d]*(\d[\d\.\-/]{13,18}\d)',
+        r'(?:02|0Z|O2|2)\s*[\-\:]?\s*(?:CNPJ)?[^\d]*(\d[\d\.\-/]{13,18}\d)'
     ]
     
-    for padrao in padroes_rotulo:
+    for padrao in padroes_especificos:
         match = re.search(padrao, texto_corrigido, re.IGNORECASE)
         if match:
             c_limpo = re.sub(r'\D', '', match.group(1))
             if len(c_limpo) == 14 and validar_digitos_cnpj(c_limpo) and c_limpo != "06697670000195":
                 return c_limpo
 
-    # Fallback: pega o primeiro CNPJ válido encontrado na folha (geralmente o da UEx do topo)
+    # 2. Se não encontrou pela proximidade, faz a verificação na API para ver qual CNPJ é um Conselho/Escola pública
     cnpjs_gerais = extrair_cnpjs_de_texto(texto)
     for c in cnpjs_gerais:
-        c_limpo = re.sub(r'\D', '', c)
-        if c_limpo != "06697670000195":
-            return c_limpo
+        if c == "06697670000195":
+            continue
+        dados = consultar_receita_federal(c)
+        razao = dados.get("razao_social", "").upper()
+        if any(term in razao for term in ["CONSELHO", "ESCOLA", "APM", "PREFEITURA", "MUNICIPIO"]):
+            return c
 
     return ""
 
 # --- PROCESSAMENTO DE IMAGEM COM TESTE DE ROTAÇÕES ---
 
 def processar_imagem_com_rotacao(imagem_pil: Image.Image) -> str:
-    """Testa a imagem em 4 rotações (0°, 90°, 180°, 270°) e retorna a leitura com mais CNPJs e texto legível."""
     imagem_pil = ImageOps.exif_transpose(imagem_pil)
     
-    # Rotações em graus anti-horário
-    angulos = [0, 90, 180, 270]
-    melhor_texto = ""
-    max_cnpjs = -1
+    angulos = [270, 90, 0, 180]  # Prioriza 270° e 90° para documentos em orientação retrato/paisagem alterada
+    textos_extraidos = []
 
     for angulo in angulos:
         img_rot = imagem_pil.rotate(angulo, expand=True) if angulo != 0 else imagem_pil
         
-        # Pré-processamento OpenCV para melhorar nitidez do OCR
         img_gray = cv2.cvtColor(np.array(img_rot), cv2.COLOR_RGB2GRAY)
         h, w = img_gray.shape
         img_resized = cv2.resize(img_gray, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
@@ -203,19 +201,11 @@ def processar_imagem_com_rotacao(imagem_pil: Image.Image) -> str:
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         img_proc = clahe.apply(img_resized)
         
-        # Tenta a leitura com o PSM adequado para blocos de texto
-        txt1 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 6')
-        txt2 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 3')
-        txt_combinado = txt1 + "\n" + txt2
-        
-        cnpjs_encontrados = len(extrair_cnpjs_de_texto(txt_combinado))
-        
-        # Seleciona o texto da orientação que conseguiu capturar a maior quantidade de CNPJs
-        if cnpjs_encontrados > max_cnpjs:
-            max_cnpjs = cnpjs_encontrados
-            melhor_texto = txt_combinado
+        t1 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 6')
+        t2 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 3')
+        textos_extraidos.append(t1 + "\n" + t2)
 
-    return melhor_texto
+    return "\n".join(textos_extraidos)
 
 def ler_arquivo(uploaded_file) -> str:
     extensao = uploaded_file.name.split('.')[-1].lower()
@@ -236,7 +226,6 @@ def ler_arquivo(uploaded_file) -> str:
             if texto_pdf:
                 return "\n".join(texto_pdf)
             else:
-                # Caso o PDF seja digitalizado/imagem
                 uploaded_file.seek(0)
                 textos_paginas = []
                 with pdfplumber.open(uploaded_file) as pdf:
@@ -286,7 +275,7 @@ if not st.session_state.validado:
     )
 
     if arquivo is not None:
-        with st.spinner("Analisando rotação e aplicando OCR na imagem..."):
+        with st.spinner("Analisando e validando documento..."):
             st.session_state.texto_processado = ler_arquivo(arquivo)
             st.session_state.tipo_doc = identificar_tipo_documento(st.session_state.texto_processado)
             st.session_state.validado = True
@@ -330,6 +319,7 @@ if st.session_state.validado:
         cnpjs_para_exibir = []
         for c in cnpjs_encontrados:
             c_limpo = re.sub(r'\D', '', c)
+            # Desconsidera o CNPJ do FNDE padrão (06697670000195) e o CNPJ da Unidade Escolar
             if c_limpo != "06697670000195" and c_limpo != cnpj_uex_limpo:
                 if c_limpo not in [re.sub(r'\D', '', x) for x in cnpjs_para_exibir]:
                     cnpjs_para_exibir.append(c)
