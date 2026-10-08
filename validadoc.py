@@ -133,6 +133,7 @@ def formatar_cnpj(cnpj: str) -> str:
 def extrair_cnpjs_de_texto(texto: str) -> list:
     cnpjs_validos = []
 
+    # 1. Expressão regular para capturar CNPJs formatados ou com ruídos do OCR
     padrao_cnpj = r'\b[0-9OoDDIlLZSsGGB]{2}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[/\s1lI|]?[0-9OoDDIlLZSsGGB]{4}[-\s]?[0-9OoDDIlLZSsGGB]{2}\b'
     for c in re.findall(padrao_cnpj, texto):
         c_corrigido = corrigir_substituicoes_ocr(c)
@@ -140,6 +141,7 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
         if len(num) == 14 and validar_digitos_cnpj(num) and num not in cnpjs_validos:
             cnpjs_validos.append(num)
 
+    # 2. Varredura direta em blocos numéricos
     texto_limpo = corrigir_substituicoes_ocr(texto)
     apenas_numeros = re.sub(r'\D', ' ', texto_limpo)
     for bloco in apenas_numeros.split():
@@ -179,30 +181,32 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
 
     return ""
 
-# --- PROCESSAMENTO DE IMAGEM AJUSTADO PARA O ORIENTAÇÃO DO FORMULÁRIO ---
+# --- PROCESSAMENTO MULTI-ÂNGULO PARA OCR COMPLETO ---
 
 def processar_imagem_para_ocr(imagem_pil: Image.Image) -> str:
     imagem_pil = ImageOps.exif_transpose(imagem_pil)
-    
-    # Se a imagem física estiver na vertical mas o formulário for deitado, ajusta automaticamente
-    largura, altura = imagem_pil.size
-    if altura > largura:
-        # Tenta rotacionar para posicionar a leitura na horizontal correta
-        img_para_ocr = imagem_pil.rotate(270, expand=True)
-    else:
-        img_para_ocr = imagem_pil
+    textos_extraidos = []
 
-    img_gray = cv2.cvtColor(np.array(img_para_ocr), cv2.COLOR_RGB2GRAY)
-    h, w = img_gray.shape
-    img_resized = cv2.resize(img_gray, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
+    # Processa nos 4 ângulos para capturar o texto em qualquer posição na página
+    angulos = [0, 90, 180, 270]
     
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    img_proc = clahe.apply(img_resized)
-    
-    t1 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 6')
-    t2 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 3')
-    
-    return t1 + "\n" + t2
+    for angulo in angulos:
+        img_rotacionada = imagem_pil.rotate(angulo, expand=True) if angulo != 0 else imagem_pil
+        
+        img_gray = cv2.cvtColor(np.array(img_rotacionada), cv2.COLOR_RGB2GRAY)
+        h, w = img_gray.shape
+        img_resized = cv2.resize(img_gray, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
+        
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        img_proc = clahe.apply(img_resized)
+        
+        t1 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 6')
+        t2 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 3')
+        
+        textos_extraidos.append(t1)
+        textos_extraidos.append(t2)
+
+    return "\n".join(textos_extraidos)
 
 def ler_arquivo(uploaded_file) -> tuple[str, str]:
     extensao = uploaded_file.name.split('.')[-1].lower()
