@@ -128,12 +128,12 @@ def formatar_cnpj(cnpj: str) -> str:
     c = re.sub(r'\D', '', str(cnpj))
     return f"{c[:2]}.{c[2:5]}.{c[5:8]}/{c[8:12]}-{c[12:]}"
 
-# --- EXTRAÇÃO GERAL DE CNPJS DA PÁGINA ---
+# --- EXTRAÇÃO DE CNPJS ROBUSTA ---
 
 def extrair_cnpjs_de_texto(texto: str) -> list:
     cnpjs_validos = []
 
-    # 1. Expressão regular para capturar CNPJs formatados ou com ruídos do OCR
+    # 1. Regex ampla para capturar padrões numéricos e caracteres comuns trocados pelo OCR
     padrao_cnpj = r'\b[0-9OoDDIlLZSsGGB]{2}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[\.\s]?[0-9OoDDIlLZSsGGB]{3}[/\s1lI|]?[0-9OoDDIlLZSsGGB]{4}[-\s]?[0-9OoDDIlLZSsGGB]{2}\b'
     for c in re.findall(padrao_cnpj, texto):
         c_corrigido = corrigir_substituicoes_ocr(c)
@@ -141,7 +141,7 @@ def extrair_cnpjs_de_texto(texto: str) -> list:
         if len(num) == 14 and validar_digitos_cnpj(num) and num not in cnpjs_validos:
             cnpjs_validos.append(num)
 
-    # 2. Varredura direta em blocos numéricos
+    # 2. Varredura por sequências contínuas de 14 dígitos após limpeza de OCR
     texto_limpo = corrigir_substituicoes_ocr(texto)
     apenas_numeros = re.sub(r'\D', ' ', texto_limpo)
     for bloco in apenas_numeros.split():
@@ -181,30 +181,42 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
 
     return ""
 
-# --- PROCESSAMENTO MULTI-ÂNGULO PARA OCR COMPLETO ---
+# --- TRATAMENTO DE IMAGEM E OCR EM MÚLTIPLOS ÂNGULOS E BINARIZAÇÃO ---
 
 def processar_imagem_para_ocr(imagem_pil: Image.Image) -> str:
     imagem_pil = ImageOps.exif_transpose(imagem_pil)
     textos_extraidos = []
 
-    # Processa nos 4 ângulos para capturar o texto em qualquer posição na página
     angulos = [0, 90, 180, 270]
     
     for angulo in angulos:
-        img_rotacionada = imagem_pil.rotate(angulo, expand=True) if angulo != 0 else imagem_pil
-        
-        img_gray = cv2.cvtColor(np.array(img_rotacionada), cv2.COLOR_RGB2GRAY)
+        img_rot = imagem_pil.rotate(angulo, expand=True) if angulo != 0 else imagem_pil
+        img_np = np.array(img_rot)
+
+        if len(img_np.shape) == 3:
+            img_gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY)
+        else:
+            img_gray = img_np
+
+        # Testar escala original e escala aumentada (2x)
+        versoes = [img_gray]
         h, w = img_gray.shape
-        img_resized = cv2.resize(img_gray, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
-        
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        img_proc = clahe.apply(img_resized)
-        
-        t1 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 6')
-        t2 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 3')
-        
-        textos_extraidos.append(t1)
-        textos_extraidos.append(t2)
+        if h < 2000 or w < 2000:
+            versoes.append(cv2.resize(img_gray, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC))
+
+        for img in versoes:
+            # 1. Filtro CLAHE
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            img_clahe = clahe.apply(img)
+
+            # 2. Binarização Otsu (aumenta o contraste entre o fundo e os números)
+            _, img_thresh = cv2.threshold(img_clahe, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+            # Executa Tesseract com múltiplos modos de página (PSM 3, 6 e 11)
+            for psm in [6, 3, 11]:
+                config = f'--psm {psm}'
+                textos_extraidos.append(pytesseract.image_to_string(img_clahe, lang='por', config=config))
+                textos_extraidos.append(pytesseract.image_to_string(img_thresh, lang='por', config=config))
 
     return "\n".join(textos_extraidos)
 
