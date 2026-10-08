@@ -179,29 +179,20 @@ def extrair_cnpj_unidade_escolar(texto: str) -> str:
 
     return ""
 
-# --- VALIDAÇÃO EXCLUSIVA DE ORIENTAÇÃO VERTICAL ---
+# --- PROCESSAMENTO DE IMAGEM AJUSTADO PARA O ORIENTAÇÃO DO FORMULÁRIO ---
 
-def validar_e_processar_imagem_vertical(imagem_pil: Image.Image) -> tuple[str, str]:
+def processar_imagem_para_ocr(imagem_pil: Image.Image) -> str:
     imagem_pil = ImageOps.exif_transpose(imagem_pil)
+    
+    # Se a imagem física estiver na vertical mas o formulário for deitado, ajusta automaticamente
     largura, altura = imagem_pil.size
+    if altura > largura:
+        # Tenta rotacionar para posicionar a leitura na horizontal correta
+        img_para_ocr = imagem_pil.rotate(270, expand=True)
+    else:
+        img_para_ocr = imagem_pil
 
-    # 1. Checa as dimensões físicas da imagem
-    if largura > altura:
-        return "", "Formato Inválido: A imagem está na horizontal. Por favor, envie o documento na orientação vertical (retrato)."
-
-    # 2. Checa a orientação do texto interno usando o Tesseract OSD
-    try:
-        osd = pytesseract.image_to_osd(imagem_pil)
-        match_angulo = re.search(r'Rotate:\s*(\d+)', osd)
-        if match_angulo:
-            angulo = int(match_angulo.group(1))
-            if angulo in [90, 270]:
-                return "", "Formato Inválido: O conteúdo da imagem encontra-se rodado. Por favor, ajuste a imagem para a posição vertical correta."
-    except Exception:
-        pass  # Continua caso o OSD não consiga inferir o ângulo exato
-
-    # Realiza a leitura apenas se a imagem estiver na vertical
-    img_gray = cv2.cvtColor(np.array(imagem_pil), cv2.COLOR_RGB2GRAY)
+    img_gray = cv2.cvtColor(np.array(img_para_ocr), cv2.COLOR_RGB2GRAY)
     h, w = img_gray.shape
     img_resized = cv2.resize(img_gray, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
     
@@ -211,7 +202,7 @@ def validar_e_processar_imagem_vertical(imagem_pil: Image.Image) -> tuple[str, s
     t1 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 6')
     t2 = pytesseract.image_to_string(img_proc, lang='por', config='--psm 3')
     
-    return t1 + "\n" + t2, ""
+    return t1 + "\n" + t2
 
 def ler_arquivo(uploaded_file) -> tuple[str, str]:
     extensao = uploaded_file.name.split('.')[-1].lower()
@@ -219,15 +210,11 @@ def ler_arquivo(uploaded_file) -> tuple[str, str]:
     try:
         if extensao in ['jpg', 'jpeg', 'png']:
             imagem_original = Image.open(uploaded_file)
-            return validar_e_processar_imagem_vertical(imagem_original)
+            texto = processar_imagem_para_ocr(imagem_original)
+            return texto, ""
 
         elif extensao == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
-                primeira_pagina = pdf.pages[0]
-                # Verifica a orientação da primeira página do PDF
-                if primeira_pagina.width > primeira_pagina.height:
-                    return "", "Formato Inválido: O documento PDF está no formato horizontal (paisagem). Por favor, forneça um PDF na orientação vertical (retrato)."
-
                 texto_pdf = []
                 for pagina in pdf.pages:
                     t = pagina.extract_text()
@@ -241,9 +228,7 @@ def ler_arquivo(uploaded_file) -> tuple[str, str]:
                     textos_paginas = []
                     for pagina in pdf.pages:
                         img = pagina.to_image(resolution=300).original
-                        txt, erro = validar_e_processar_imagem_vertical(img)
-                        if erro:
-                            return "", erro
+                        txt = processar_imagem_para_ocr(img)
                         textos_paginas.append(txt)
                     return "\n".join(textos_paginas), ""
 
